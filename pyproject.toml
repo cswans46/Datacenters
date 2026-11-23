@@ -50,6 +50,9 @@ testpaths = ["tests"]
 py-modules = [
     "gtap_testing",
     "global_datacentre_icio_model",
+    "global_datacentre_icio_model_v2",
+    "canada_dsut_split",
+    "tiva_ghg_indicators",
     "build_aea_crosswalk",
     "build_aea_emission_weights",
 ]

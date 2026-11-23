@@ -63,6 +63,20 @@ Important assumptions
 - The hybrid emissions extension is authoritative for direct industry
   emissions and their source attribution.
 - The hybrid extension must cover every ICIO industry exactly once.
+
+Canadian DSUT split (optional, --split-canada-dsut)
+--------------------------------------------------
+CAN_J62_63 is split into CAN_J62_63_CLD (cloud computing services),
+CAN_J62_63_DPH (other NAICS 51821: infrastructure, data processing, web
+hosting) and CAN_J62_63_OTH (rest of J62_63) using the 2020 Canadian
+DSUT and the 2022 StatCan SUT; see canada_dsut_split.py. The Canadian
+data-centre shock is then applied to CLD and DPH in proportion to their
+output (--canada-dc-target cloud_and_hosting, default) or to CLD only
+(--canada-dc-target cloud). Other countries, including India, are not
+split.
+
+TiVA and GHG footprint indicators (optional, --tiva-ghg-indicators)
+are computed on the (split) table; see tiva_ghg_indicators.py.
 """
 
 from __future__ import annotations
@@ -76,6 +90,9 @@ import numpy as np
 import pandas as pd
 import pyreadr
 from scipy.linalg import lu_factor, lu_solve
+
+import canada_dsut_split as cds
+import tiva_ghg_indicators as tgi
 
 
 LOG = logging.getLogger("datacentre_icio")
@@ -718,7 +735,31 @@ def load_icio(args):
 # ---------------------------------------------------------------------
 
 
-def load_sector_maps(A: pd.DataFrame, data_dir: Path):
+def load_sector_maps(
+    A: pd.DataFrame,
+    data_dir: Path,
+    dc_target_overrides: Optional[dict[str, tuple[str, list[tuple[str, float]]]]] = None,
+):
+    """
+    dc_target_overrides maps a country to (original_proxy_key, targets),
+    where targets is a list of (io_key, weight) pairs. It is used when an
+    ICIO sector has been split (e.g. CAN_J62_63 by the Canadian DSUT): the
+    country's proxy in dc_sector_map.csv must equal original_proxy_key and
+    the shock is then distributed over the target subsectors.
+    """
+    sector_map, dc_map = _load_sector_maps(A, data_dir, dc_target_overrides or {})
+    return sector_map, dc_map
+
+
+def dc_targets_of(cfg) -> list[tuple[str, float]]:
+    """Data-centre shock targets (io_key, weight) for one dc_map row."""
+    targets = getattr(cfg, "dc_targets", None)
+    if isinstance(targets, (list, tuple)) and targets:
+        return [(str(k), float(w)) for k, w in targets]
+    return [(str(cfg.dc_proxy_io_key), 1.0)]
+
+
+def _load_sector_maps(A: pd.DataFrame, data_dir: Path, dc_target_overrides: dict):
     """
     Construct the ICIO sector map directly from the A matrix labels.
 
@@ -816,13 +857,49 @@ def load_sector_maps(A: pd.DataFrame, data_dir: Path):
             f"{sorted(REQUIRED_COUNTRIES)}."
         )
 
+    # Apply split-sector target overrides (e.g. CAN_J62_63 -> CLD + DPH).
+    targets_column = []
+    for row in dc_map.itertuples(index=False):
+        override = dc_target_overrides.get(row.country)
+        if override is None:
+            targets_column.append([(row.dc_proxy_io_key, 1.0)])
+            continue
+        original_key, targets = override
+        if row.dc_proxy_io_key != original_key:
+            raise ValueError(
+                f"dc_sector_map.csv maps {row.country} to {row.dc_proxy_io_key}, "
+                f"but the split replaces {original_key}. Map {row.country} to "
+                f"{original_key} or disable the split."
+            )
+        weights = np.array([w for _, w in targets], dtype=float)
+        if (weights < 0).any() or not np.isclose(weights.sum(), 1.0):
+            raise ValueError(f"Data-centre target weights for {row.country} must sum to one.")
+        targets_column.append(list(targets))
+        LOG.info(
+            "Data-centre proxy for %s: %s replaced by %s",
+            row.country, original_key,
+            ", ".join(f"{k} ({w:.4f})" for k, w in targets),
+        )
+
+    dc_map["dc_targets"] = targets_column
+    dc_map["dc_proxy_io_key"] = [t[0][0] for t in targets_column]
+    dc_map["dc_proxy_label"] = [
+        "+".join(k for k, _ in t) for t in targets_column
+    ]
+
     for row in dc_map.itertuples(index=False):
 
-        if row.dc_proxy_io_key not in A.columns:
-            raise ValueError(
-                f"Unknown data-centre proxy for {row.country}: "
-                f"{row.dc_proxy_io_key}"
-            )
+        for target_key, _ in row.dc_targets:
+            if target_key not in A.columns:
+                raise ValueError(
+                    f"Unknown data-centre proxy for {row.country}: "
+                    f"{target_key}"
+                )
+            if not target_key.startswith(f"{row.country}_"):
+                raise ValueError(
+                    f"Data-centre proxy for {row.country} does not belong to "
+                    f"that country: {target_key}"
+                )
 
         if row.electricity_io_key not in A.index:
             raise ValueError(
@@ -1342,6 +1419,7 @@ def load_emissions_extension(
     emissions_file: Path,
     X: pd.Series,
     sector_map: pd.DataFrame,
+    transform=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load the completed hybrid emissions extension and calculate ICIO
@@ -1413,6 +1491,11 @@ def load_emissions_extension(
         raise ValueError(
             "Hybrid emissions extension contains non-finite emissions values."
         )
+
+    # Optional transformation, e.g. splitting the CAN_J62_63 row to match a
+    # split ICIO (see canada_dsut_split.split_emissions_frame).
+    if transform is not None:
+        emissions = transform(emissions)
 
     # Negative emissions are retained: the hybrid extension is responsible
     # for determining and documenting their treatment.
@@ -1813,14 +1896,17 @@ def build_scenarios(
     for row in scenarios.itertuples(index=False):
         cfg = dc_lookup.loc[row.country]
 
-        coefficient = float(
-            A.loc[cfg.electricity_io_key, cfg.dc_proxy_io_key]
-        )
+        # Output-weighted electricity coefficient over the proxy targets
+        # (a single sector unless the proxy has been split).
+        coefficient = float(sum(
+            weight * A.loc[cfg.electricity_io_key, target_key]
+            for target_key, weight in dc_targets_of(cfg)
+        ))
 
         if not np.isfinite(coefficient) or coefficient <= 0:
             raise ValueError(
                 f"Invalid electricity coefficient for {row.country}: "
-                f"A[{cfg.electricity_io_key}, {cfg.dc_proxy_io_key}]={coefficient}"
+                f"A[{cfg.electricity_io_key}, {cfg.dc_proxy_label}]={coefficient}"
             )
 
         electricity_coefficients.append(coefficient)
@@ -2248,11 +2334,10 @@ def run_leontief(
     # Construct target industry lookups.
     # ------------------------------------------------------------
 
-    target_key_by_country = (
-        dc_map
-        .set_index("country")["dc_proxy_io_key"]
-        .to_dict()
-    )
+    target_keys_by_country = {
+        row.country: dc_targets_of(row)
+        for row in dc_map.itertuples(index=False)
+    }
 
     key_to_index = {
         key: i
@@ -2261,7 +2346,8 @@ def run_leontief(
 
     missing_target_keys = [
         key
-        for key in target_key_by_country.values()
+        for targets in target_keys_by_country.values()
+        for key, _ in targets
         if key not in key_to_index
     ]
 
@@ -2271,9 +2357,14 @@ def run_leontief(
             f"{missing_target_keys}"
         )
 
+    # country -> (indices, weights). A single proxy has weight one; a split
+    # proxy (e.g. CAN_J62_63_CLD + _DPH) shares the shock by output weight.
     target_index_by_country = {
-        country: key_to_index[key]
-        for country, key in target_key_by_country.items()
+        country: (
+            [key_to_index[key] for key, _ in targets],
+            np.array([weight for _, weight in targets], dtype=float),
+        )
+        for country, targets in target_keys_by_country.items()
     }
 
     electricity_index_by_country = {}
@@ -2336,7 +2427,7 @@ def run_leontief(
                 f"No data-centre proxy industry is mapped for {country}."
             )
 
-        target_index = target_index_by_country[country]
+        target_dc_indices, target_dc_weights = target_index_by_country[country]
 
         shock_definitions = {
             "all_expansion": row.dc_output_yoy_usd_mn,
@@ -2469,29 +2560,29 @@ def run_leontief(
                     # changes are used in BOTH Leontief and Ghosh.
                     # ----------------------------------------------------
 
+                    dc_shocks = shock * target_dc_weights
+
                     if physical_electricity_shock is None:
 
-                        target_indices = [target_index]
+                        target_indices = list(target_dc_indices)
 
-                        target_shocks = np.array(
-                            [shock],
+                        target_shocks = np.asarray(
+                            dc_shocks,
                             dtype=float,
                         )
 
                     else:
 
-                        target_indices = [
-                            target_index,
+                        target_indices = list(target_dc_indices) + [
                             electricity_index,
                         ]
 
-                        target_shocks = np.array(
+                        target_shocks = np.concatenate(
                             [
-                                shock,
-                                physical_electricity_shock,
-                            ],
-                            dtype=float,
-                        )
+                                dc_shocks,
+                                [physical_electricity_shock],
+                            ]
+                        ).astype(float)
 
                     if len(set(target_indices)) != len(target_indices):
                         raise ValueError(
@@ -3268,7 +3359,117 @@ def parse_args():
 
     parser.add_argument("--log-level", default="INFO")
 
+    # --------------------------------------------------------------
+    # Canadian DSUT split of CAN_J62_63
+    # --------------------------------------------------------------
+    split = parser.add_argument_group("Canadian DSUT split")
+    split.add_argument(
+        "--split-canada-dsut",
+        action="store_true",
+        help="Split CAN_J62_63 into cloud (CLD), other NAICS 51821 (DPH) and rest (OTH).",
+    )
+    split.add_argument(
+        "--canada-dsut-file",
+        type=Path,
+        default=None,
+        help="Filled DSUT template (python canada_dsut_split.py write-templates). "
+             "Default: <data-dir>/canada_dsut_2020.csv",
+    )
+    split.add_argument(
+        "--statcan-sut-file",
+        type=Path,
+        default=None,
+        help="StatCan 36-10-0478-01 extract (CSV) or full-table ZIP. "
+             "Default: downloaded and cached in <data-dir>/statcan_cache.",
+    )
+    split.add_argument("--sut-year", type=int, default=2022)
+    split.add_argument(
+        "--canada-cloud-share-override",
+        type=float,
+        default=None,
+        help="Cloud share of NAICS 51821 output in the SUT year, projected from the "
+             "2020 DSUT with E3MC. Without it the 2020 DSUT share is used.",
+    )
+    split.add_argument(
+        "--canada-dc-target",
+        choices=["cloud_and_hosting", "cloud"],
+        default="cloud_and_hosting",
+        help="Canadian subsectors receiving the data-centre output shock.",
+    )
+    split.add_argument(
+        "--canada-split-emissions-basis",
+        choices=["output", "electricity_input"],
+        default="output",
+        help="How CAN_J62_63 direct emissions are split across subsectors.",
+    )
+    split.add_argument(
+        "--sut-member-overrides",
+        type=Path,
+        default=None,
+        help="CSV (member, category) correcting the SUT column classification.",
+    )
+    split.add_argument("--sut-pattern-518", default=cds.DEFAULT_518_PATTERN)
+    split.add_argument("--sut-pattern-other-j", default=cds.DEFAULT_OTHER_J_PATTERN)
+
+    # --------------------------------------------------------------
+    # TiVA and GHG footprint indicators
+    # --------------------------------------------------------------
+    ind = parser.add_argument_group("TiVA and GHG footprint indicators")
+    ind.add_argument(
+        "--tiva-ghg-indicators",
+        action="store_true",
+        help="Compute TiVA and GHG footprint indicators on the (split) ICIO.",
+    )
+    ind.add_argument(
+        "--indicators-only",
+        action="store_true",
+        help="Stop after the indicators (skip scenario inputs and Leontief/Ghosh shocks).",
+    )
+
     return parser.parse_args()
+
+
+def apply_canada_split(args, A, X, FD):
+    """Build the DSUT split plan and split CAN_J62_63 in A, X and FD."""
+    dsut_file = args.canada_dsut_file or (args.data_dir / "canada_dsut_2020.csv")
+    if not dsut_file.exists():
+        template = cds.write_dsut_template(args.output_dir / "canada_dsut_2020_TEMPLATE.csv")
+        raise FileNotFoundError(
+            f"DSUT file not found: {dsut_file}. A template was written to {template}; "
+            "fill it from the 2020 Canadian DSUT and pass it with --canada-dsut-file."
+        )
+
+    sut_file = args.statcan_sut_file
+    if sut_file is None:
+        sut_file = cds.fetch_statcan_sut(args.data_dir / "statcan_cache", args.sut_year)
+
+    plan = cds.prepare_canada_split(
+        sut_file=sut_file,
+        dsut_file=dsut_file,
+        sut_year=args.sut_year,
+        cloud_share_override=args.canada_cloud_share_override,
+        member_overrides=args.sut_member_overrides,
+        pattern_518=args.sut_pattern_518,
+        pattern_other_j=args.sut_pattern_other_j,
+    )
+
+    A, X, FD, split_diag = cds.split_icio(A, X, FD, plan)
+    cds.write_split_diagnostics(args.output_dir / "canada_dsut_split", plan, split_diag)
+    return A, X, FD, plan
+
+
+def main_indicators(args, A, X, FD, extension, plan):
+    focus = list(plan.sub_keys) if plan is not None else None
+    results = tgi.compute_indicators(
+        A=A,
+        X=X,
+        FD=FD,
+        intensity=extension.set_index("io_key")["ghg_tonnes_per_usd_mn"],
+        focus_country="CAN",
+        focus_keys=focus,
+    )
+    tgi.write_indicators(results, args.output_dir / "tiva_ghg_indicators")
+    return results
 
 
 def main():
@@ -3308,8 +3509,39 @@ def main():
     LOG.info("ICIO X industries: %s", len(X))
     LOG.info("ICIO FD dimensions: %s", FD.shape)
 
+    # 1b. Optionally split Canadian data centres out of CAN_J62_63.
+    plan = None
+    dc_overrides = None
+    emissions_transform = None
+
+    if args.split_canada_dsut:
+        A, X, FD, plan = apply_canada_split(args, A, X, FD)
+        dc_overrides = {
+            "CAN": (plan.parent_key, plan.dc_targets(args.canada_dc_target)),
+        }
+
+        def emissions_transform(df, _plan=plan, _A=A, _X=X):
+            return cds.split_emissions_frame(
+                df, _plan, A_split=_A, X_split=_X,
+                basis=args.canada_split_emissions_basis,
+            )
+
+        LOG.info("Split ICIO dimensions: %s x %s", *A.shape)
+
     # 2. Load sector maps.
-    sector_map, dc_map = load_sector_maps(A, args.data_dir)
+    sector_map, dc_map = load_sector_maps(A, args.data_dir, dc_overrides)
+
+    if args.indicators_only:
+        extension, coverage_summary = load_emissions_extension(
+            emissions_file=args.emissions_extension,
+            X=X,
+            sector_map=sector_map,
+            transform=emissions_transform,
+        )
+        extension.to_csv(args.output_dir / "icio_emissions_extension.csv", index=False)
+        main_indicators(args, A, X, FD, extension, plan)
+        LOG.info("Indicators-only run completed.")
+        return
 
     (
         output,
@@ -3331,6 +3563,7 @@ def main():
         emissions_file=args.emissions_extension,
         X=X,
         sector_map=sector_map,
+        transform=emissions_transform,
     )
 
     # Save the validated extension and its coverage diagnostics.
@@ -3401,6 +3634,10 @@ def main():
     if args.check_only:
         LOG.info("Check-only selected; stopping before Leontief calculation.")
         return
+
+    # 5b. TiVA and GHG footprint indicators on the (split) ICIO.
+    if args.tiva_ghg_indicators:
+        main_indicators(args, A, X, FD, extension, plan)
 
     # 6. Calculate global embodied-emissions footprints.
     (
