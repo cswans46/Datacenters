@@ -50,6 +50,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ------------------------------------------------------------------
+REM Optional: project the (split) ICIO 2023-2030 with the OECD, ARIMA and
+REM external (AEO/IEO/WEO) methods and compare them. Run once:
+REM   python project_icio.py build-panel --out data\projection\panel --data-dir "%DATA_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" [--pyp-dir D:\ICIO\PYP]
+REM   set EIA_API_KEY=...   then   python project_icio.py fetch-external --out data\projection\external.csv
+REM Then (set run_projection=1 to enable):
+if "%run_projection%"=="1" (
+    python project_icio.py run --panel data\projection\panel --external data\projection\external.csv --out "%OUTPUT_DIR%\projection" --rdata --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" %canada_split%
+)
+
 echo.
 echo Model completed successfully.
 pause
