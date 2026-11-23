@@ -53,6 +53,7 @@ py-modules = [
     "global_datacentre_icio_model_v2",
     "canada_dsut_split",
     "tiva_ghg_indicators",
+    "estimate_canada_cloud_share",
     "build_aea_crosswalk",
     "build_aea_emission_weights",
 ]
