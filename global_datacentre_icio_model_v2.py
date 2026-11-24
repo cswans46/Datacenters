@@ -3408,6 +3408,12 @@ def parse_args():
         default=None,
         help="CSV (member, category) correcting the SUT column classification.",
     )
+    split.add_argument(
+        "--dc-origin-shares",
+        default=None,
+        help="Country-of-origin shares for the imported inputs of CLD and DPH "
+             "(dc_origin_override.py); 'default' uses the built-in C26 variant.",
+    )
     split.add_argument("--sut-pattern-518", default=cds.DEFAULT_518_PATTERN)
     split.add_argument("--sut-pattern-other-j", default=cds.DEFAULT_OTHER_J_PATTERN)
 
@@ -3455,6 +3461,20 @@ def apply_canada_split(args, A, X, FD):
 
     A, X, FD, split_diag = cds.split_icio(A, X, FD, plan)
     cds.write_split_diagnostics(args.output_dir / "canada_dsut_split", plan, split_diag)
+
+    # Country-of-origin override for the data-centre sectors (CLD, DPH).
+    if getattr(args, "dc_origin_shares", None):
+        import dc_origin_override as dco
+        if str(args.dc_origin_shares).lower() == "default":
+            shares_path = dco.write_defaults(args.output_dir / "canada_dsut_split" / "dc_origin_shares_default.csv")
+        else:
+            shares_path = Path(args.dc_origin_shares)
+        shares = dco.load_shares(shares_path)
+        A, X, FD, odiag = dco.apply_origin_override(A, X, FD, [plan.cloud_key, plan.hosting_key], shares)
+        out = args.output_dir / "canada_dsut_split"
+        out.mkdir(parents=True, exist_ok=True)
+        odiag.to_csv(out / "dc_origin_override.csv", index=False)
+        LOG.info("Applied data-centre origin override from %s", shares_path)
     return A, X, FD, plan
 
 

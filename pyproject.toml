@@ -58,6 +58,7 @@ py-modules = [
     "tiva_ghg_indicators",
     "estimate_canada_cloud_share",
     "project_icio",
+    "dc_origin_override",
     "build_aea_crosswalk",
     "build_aea_emission_weights",
 ]

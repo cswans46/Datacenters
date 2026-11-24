@@ -30,7 +30,7 @@ REM      %DATA_DIR%\statcan_cache on first run (or set --statcan-sut-file).
 REM   3. Optional: projected (E3MC) cloud share of NAICS 51821 output for
 REM      the SUT year, e.g. set "cloud_share=--canada-cloud-share-override 0.45"
 REM   Comment out the next line to run without the split.
-set "canada_split=--split-canada-dsut --canada-dsut-file "%DATA_DIR%\canada_dsut_2020.csv" --sut-year 2022 --canada-dc-target cloud_and_hosting"
+set "canada_split=--split-canada-dsut --canada-dsut-file "%DATA_DIR%\canada_dsut_2020.csv" --sut-year 2022 --canada-dc-target cloud_and_hosting --dc-origin-shares default"
 @REM set "cloud_share=--canada-cloud-share-override 0.45"
 
 REM TiVA and GHG footprint indicators on the (split) ICIO.
