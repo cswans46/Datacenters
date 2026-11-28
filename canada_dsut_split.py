@@ -390,16 +390,18 @@ NAICS_TO_ICIO = [
     ("562", "36T39"), ("61", "85"), ("62", "86T88"), ("71", "90T93"),
     ("72", "55T56"), ("8111", "45T47"), ("811", "94T96"), ("812", "94T96"),
     ("813", "94T96"), ("814", "97T98"), ("91", "84"),
+    # StatCan aggregate codes containing letters.
+    ("11A", "01"), ("31A", "13T15"), ("31B", "13T15"), ("48A", "49"), ("4A", "45T47"),
 ]
 
 
 def icio_sector_of_sut_industry(label: str) -> Optional[str]:
     """ICIO 2025 sector of a StatCan SUT industry label, e.g. '... [BS521000]'."""
     code = member_code(label)
-    digits = re.match(r"^[A-Z]{2}(\d+)", code.upper())
-    if not digits:
+    match = re.match(r"^[A-Z]{2}([0-9][0-9A-Z]*)", code.upper())
+    if not match:
         return None
-    naics = digits.group(1)
+    naics = match.group(1)
     best = None
     for prefix, sector in NAICS_TO_ICIO:
         if naics.startswith(prefix) and (best is None or len(prefix) > len(best[0])):

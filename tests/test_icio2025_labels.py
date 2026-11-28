@@ -114,6 +114,9 @@ def test_origin_override_uses_split_blocks_for_empty_country_rows():
     ("Religious organizations [NP813100]", "94T96"),
     ("Federal government services [GS911000]", "84"),
     ("Household final consumption expenditure [PEC]", None),
+    ("Clothing and leather and allied product manufacturing [BS31B000]", "13T15"),
+    ("Other transit and ground passenger transportation and scenic and sightseeing transportation [BS48A000]", "49"),
+    ("Retail trade [BS4A0000]", "45T47"),
 ])
 def test_naics_to_icio(label, sector):
     assert cds.icio_sector_of_sut_industry(label) == sector
