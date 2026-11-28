@@ -47,7 +47,7 @@ set "india_split=--split-india-iot "%DATA_DIR%\IOT_2023-24_RAS.xlsx""
 REM Electricity cost share options (see docs\methodology.md, section 6):
 REM   --output-includes-power-passthrough  rent per MW excludes power; add the bill
 REM   --it-utilisation 0.7                 electricity file assumes full load
-@REM set "power_opts=--output-includes-power-passthrough --it-utilisation 0.7"
+set "power_opts=--output-includes-power-passthrough --it-utilisation 0.7"
 
 REM TiVA and GHG footprint indicators on the (split) ICIO.
 set "indicators=--tiva-ghg-indicators"
