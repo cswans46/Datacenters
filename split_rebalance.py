@@ -127,11 +127,22 @@ def balance_report(
     })
     negative = negative.loc[negative["value_added_coefficient"] < -1e-9].reset_index(drop=True)
 
+    worst = np.argsort(-rel)[:10]
+    row_errors = pd.DataFrame({
+        "io_key": [keys[i] for i in worst],
+        "output_usd_mn": x[worst],
+        "row_total_usd_mn": row_total[worst],
+        "difference_usd_mn": (row_total - x)[worst],
+        "relative_error": rel[worst],
+    })
+    row_errors = row_errors.loc[row_errors["relative_error"] > tolerance].reset_index(drop=True)
+
     summary = {
         "industries": len(keys),
         "max_row_identity_relative_error": float(rel.max()),
         "row_identity_ok": bool(rel.max() <= tolerance),
         "negative_value_added_industries": int(len(negative)),
+        "row_errors": row_errors,
     }
     return summary, negative
 
@@ -142,7 +153,12 @@ def log_balance(summary: dict, negative: pd.DataFrame, label: str = "ICIO") -> N
         label, summary["industries"], summary["max_row_identity_relative_error"],
     )
     if not summary["row_identity_ok"]:
-        LOG.warning("%s: rows do not sum to gross output within tolerance.", label)
+        errors = summary.get("row_errors")
+        detail = "" if errors is None or errors.empty else ": " + ", ".join(
+            f"{k} (output {o:,.1f}, rows sum to {t:,.1f})"
+            for k, o, t in zip(errors["io_key"], errors["output_usd_mn"], errors["row_total_usd_mn"])
+        )
+        LOG.warning("%s: rows do not sum to gross output within tolerance%s.", label, detail)
     if len(negative):
         LOG.warning(
             "%s: %s industries with negative value added: %s",

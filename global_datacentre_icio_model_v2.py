@@ -3531,6 +3531,7 @@ def main():
     balance, negative_va = sr.balance_report(A, X, FD, tolerance=args.icio_identity_tolerance)
     sr.log_balance(balance, negative_va)
     negative_va.to_csv(args.output_dir / "icio_negative_value_added.csv", index=False)
+    balance["row_errors"].to_csv(args.output_dir / "icio_row_identity_errors.csv", index=False)
 
     # 2. Load sector maps.
     sector_map, dc_map = load_sector_maps(A, args.data_dir, dc_overrides)

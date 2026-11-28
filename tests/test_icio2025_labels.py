@@ -70,3 +70,34 @@ def test_origin_override_matches_letter_and_numeric_codes(tmp_path):
     A3, X3, FD3, diag = dco.apply_origin_override(A2, X2, FD2, targets, shares)
     mix = dco.origin_mix(A3, X3, plan.cloud_key, "^35$")
     assert mix[origins[0]] / mix.sum() == pytest.approx(0.6)
+
+
+def test_origin_override_uses_split_blocks_for_empty_country_rows():
+    """ICIO 2025: MEX rows are empty; Mexico's data sit in MX1/MX2."""
+    import split_rebalance as sr
+
+    keys = ["CAN_26", "CAN_62T63_CLD", "CAN_01", "MEX_26", "MX1_26", "MX2_26", "USA_26", "USA_01"]
+    x = pd.Series([50.0, 40.0, 80.0, 0.0, 60.0, 30.0, 90.0, 120.0], index=keys)
+    Z = pd.DataFrame(0.0, index=keys, columns=keys)
+    Z.loc["CAN_26", ["CAN_62T63_CLD", "CAN_01"]] = [3.0, 2.0]
+    Z.loc["MX1_26", ["CAN_62T63_CLD", "CAN_01", "USA_01"]] = [2.0, 1.0, 6.0]
+    Z.loc["MX2_26", ["CAN_62T63_CLD", "USA_01"]] = [1.0, 4.0]
+    Z.loc["USA_26", ["CAN_62T63_CLD", "CAN_01", "USA_01"]] = [4.0, 2.0, 10.0]
+    Z.loc["CAN_01", ["CAN_26", "CAN_01"]] = [5.0, 8.0]
+    Z.loc["USA_01", ["USA_26", "MX1_26", "USA_01"]] = [9.0, 4.0, 15.0]
+    A = Z / x.where(x > 0, 1.0)
+    A.loc[:, "MEX_26"] = 0.0
+    fd_total = x - Z.sum(axis=1)
+    FD = pd.DataFrame({"CAN": fd_total * 0.5, "USA": fd_total * 0.5})
+
+    shares = pd.DataFrame({"input_sector": ["C26", "C26"], "origin": ["MEX", "USA"],
+                           "share": [0.6, 0.4], "source": "test"})
+    A2, X2, FD2, diag = dco.apply_origin_override(A, x, FD, ["CAN_62T63_CLD"], shares)
+
+    Z2 = A2 * X2
+    assert Z2.loc["MEX_26"].abs().sum() == pytest.approx(0.0)
+    imports = Z2.loc[["MX1_26", "MX2_26", "USA_26"], "CAN_62T63_CLD"]
+    assert (imports["MX1_26"] + imports["MX2_26"]) / imports.sum() == pytest.approx(0.6)
+    assert imports["MX1_26"] / imports["MX2_26"] == pytest.approx(60.0 / 30.0)
+    summary, _ = sr.balance_report(A2, X2, FD2)
+    assert summary["row_identity_ok"]

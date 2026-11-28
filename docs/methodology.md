@@ -209,6 +209,11 @@ import shares for HS 847150), keeps the domestic share and the import
 total, and re-balances the table with signed RAS so all rows still sum to
 output.
 
+In ICIO 2025, China and Mexico are reported as two blocks each (CN1/CN2,
+MX1/MX2) and their `CHN_*`/`MEX_*` rows are empty. Shares listed for CHN
+or MEX are therefore spread over the blocks in proportion to their output
+of the sector, and rows with zero output never receive purchases.
+
 ## 6. From capacity to an output shock
 
 For country $c$ and year $t$, data-centre output in 2022 USD million is
@@ -569,6 +574,7 @@ in the build year, reported separately in
 | Canadian split failed on ICIO 2025 labels (`62T63`) and matched inputs by 2023 letter codes | Both label conventions accepted | Split runs on ICIO 2025 |
 | India not split | `--split-india-iot` (section 4b) | India shock goes to a data-centre sector |
 | Split columns' value added was a residual | RAS to source-table value-added shares (section 4c); table-wide balance check | Balanced table with sourced value added |
+| Server-origin override sent Mexico's share to the empty `MEX_26` row (ICIO 2025 reports Mexico as MX1/MX2), leaving about USD 119 mn of sales with zero output and zero emissions | CHN/MEX shares are spread over CN1/CN2 and MX1/MX2 by output; zero-output rows are never used; the balance check names failing rows (`icio_row_identity_errors.csv`) | Table balanced again; Mexican server production now carries emissions |
 | Electricity cost share fixed by rent per MW at full load | `--output-includes-power-passthrough`, `--it-utilisation` | Lower, sourced electricity shares |
 
 ## References

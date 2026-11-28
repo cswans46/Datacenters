@@ -75,6 +75,12 @@ DEFAULT_SHARES = [
     ("C26", "OTHER", 0.75 * 0.040, "Remainder, spread over other origins in proportion to the 2022 ICIO"),
 ]
 
+# ICIO 2025 reports China and Mexico as two blocks each (CN1/CN2: domestic
+# and processing trade; MX1/MX2: global manufacturing). Their CHN/MEX rows
+# exist but are empty (zero output), so shares listed for CHN or MEX are
+# shared across the blocks in proportion to their output of the sector.
+SPLIT_BLOCKS = {"CHN": ("CN1", "CN2"), "MEX": ("MX1", "MX2")}
+
 # Country names in Trade Data Online / StatCan -> ICIO codes.
 COUNTRY_CODES = {
     "united states": "USA", "mexico": "MEX", "taiwan": "TWN", "china": "CHN", "vietnam": "VNM",
@@ -165,11 +171,23 @@ def apply_origin_override(A: pd.DataFrame, X: pd.Series, FD: pd.DataFrame, targe
         row_country = {country_of(keys[i]): i for i in rows}
         listed = {o: float(s) for o, s in zip(sh["origin"], sh["share"]) if o != "OTHER"}
         other = float(sh.loc[sh["origin"] == "OTHER", "share"].sum())
-        missing = [o for o in listed if o not in row_country]
+        # Origins reported as split blocks (CN1/CN2, MX1/MX2).
+        for o in list(listed):
+            if o in row_country and x[row_country[o]] > 0:
+                continue
+            blocks = [b for b in SPLIT_BLOCKS.get(o, ()) if b in row_country and x[row_country[b]] > 0]
+            if blocks:
+                weights = np.array([x[row_country[b]] for b in blocks], dtype=float)
+                share = listed.pop(o)
+                for b, wb in zip(blocks, weights / weights.sum()):
+                    listed[b] = listed.get(b, 0.0) + share * wb
+                LOG.info("Origin %s %s share assigned to %s by output.", o, sector, blocks)
+        missing = [o for o in listed if o not in row_country or x[row_country[o]] <= 0]
         for o in missing:
             LOG.warning("Origin %s has no %s row in the ICIO; its share goes to OTHER.", o, sector)
             other += listed.pop(o)
-        rest = [i for c, i in row_country.items() if c not in listed]
+        # Rows with zero output (e.g. CHN/MEX in ICIO 2025) cannot supply anything.
+        rest = [i for c, i in row_country.items() if c not in listed and x[i] > 0]
         for j in tcols:
             before = Z[rows, j].copy()
             total = before.sum()
