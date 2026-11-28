@@ -252,7 +252,18 @@ Two options change the output and electricity definitions:
 * `--it-utilisation u`: electricity demand is multiplied by $u \in (0,1]$.
   Use it when `dc_electricity_demand.csv` assumes full load
   (electricity MW = capacity × PUE). It also lowers grid emissions and
-  water; e-waste (capacity-based) is unchanged.
+  water; e-waste (capacity-based) is unchanged. The default run uses
+  $u = 0.7$, the average annual server utilisation assumed by Shehabi
+  et al. (2024), whose uncertainty range is 30–80%. Industry estimates
+  of facility load factors run higher (about 80–90%; ICIS, 2025), so
+  $u = 0.8$–$0.9$ is a reasonable upper sensitivity.
+* Evidence that `price_mn_MW_2022` is rent excluding power: Indian
+  leasing revenue of about ₹7,400 per kW-month (≈ USD 1.08 mn per
+  MW-year) matches the India input (USD 1.139 mn per MW); Indian
+  colocation bills power separately; and the AI-DC column of India's
+  IOT has an electricity share of 1.18%. The default run therefore uses
+  `--output-includes-power-passthrough`. With both options the
+  electricity cost share is about 29% (Canada) and 41% (India).
 
 The resulting electricity cost share of output is
 
@@ -553,11 +564,10 @@ in the build year, reported separately in
    for India when the splits are used; without the India split, India's
    cost structure is that of IT services in general.
 3. Output per MW (`price_mn_MW_2022`) drives the shock size and the
-   electricity cost share. Current inputs imply electricity costs of 59%
-   (Canada) and 98% (India) of data-centre revenue, with capacity running
-   at 100% utilisation (facility MW = IT MW × PUE). With such shares the
-   hybrid column leaves little room for other inputs (India: other inputs
-   scaled to 2.4% of the ICIO column).
+   electricity cost share. Treated as total revenue at full load, the
+   inputs imply electricity costs of 59% (Canada) and 98% (India) of
+   data-centre revenue. The default run adds the power pass-through and
+   70% utilisation (section 6), which lowers these to about 29% and 41%.
 4. Electricity intensity is a national average converted with the
    data-centre price; provincial/state differences are not modelled.
 5. BTM share 0.92 is an upper bound; gas upstream emissions default to
@@ -593,6 +603,9 @@ in the build year, reported separately in
 
 ## References
 
+ICIS (2025). *Data centres: hungry for power. Forecasting European power
+demand from data centres to 2035*. ICIS.
+
 Dietzenbacher, E. (1997). In vindication of the Ghosh model: a
 reinterpretation as a price model. *Journal of Regional Science* 37(4).
 
@@ -608,3 +621,8 @@ Foundations and Extensions*, 3rd ed., Cambridge University Press
 
 Oosterhaven, J. (1988). On the plausibility of the supply-driven
 input-output model. *Journal of Regional Science* 28(2).
+
+Shehabi, A., Smith, S. J., Hubbard, A., Newkirk, A., Lei, N., Siddik,
+M. A. B., Holecek, B., Koomey, J., Masanet, E. and Sartor, D. (2024).
+*2024 United States Data Center Energy Usage Report*. Lawrence Berkeley
+National Laboratory, LBNL-2001637.
