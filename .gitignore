@@ -141,3 +141,6 @@ __MACOSX
 **/*.db
 **/*.db-shm
 **/*.db-wal
+
+# Keep the methodology documentation under version control
+!docs/*.md

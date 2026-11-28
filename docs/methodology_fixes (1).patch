@@ -1,0 +1,3661 @@
+diff --git a/.gitignore b/.gitignore
+index 38068ed..6f78fde 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -141,3 +141,6 @@ __MACOSX
+ **/*.db
+ **/*.db-shm
+ **/*.db-wal
++
++# Keep the methodology documentation under version control
++!docs/*.md
+diff --git a/docs/methodology.md b/docs/methodology.md
+new file mode 100644
+index 0000000..12021ec
+--- /dev/null
++++ b/docs/methodology.md
+@@ -0,0 +1,499 @@
++# Data-centre expansion footprint model: mathematical description
++
++This document describes, step by step, how `global_datacentre_icio_model_v2.py`
++and its helper scripts turn a data-centre capacity scenario into output,
++emissions, trade and water estimates. Equations use GitHub math notation.
++Section 15 lists what changed in the November 2026 methodology fixes and
++how it affects the numbers.
++
++Contents
++
++1. Pipeline and files
++2. Notation and the ICIO table
++3. Direct-emissions extension (AEA / GTAP 12)
++4. Canadian data-centre split (DSUT / SUT)
++5. Country-of-origin override for servers
++6. From capacity to an output shock
++7. Physical metrics: electricity, grid emissions, water
++8. Upstream: Leontief model with exogenous data-centre output
++9. Electricity: ICIO-endogenous and hybrid (physical) columns
++10. Emission intensities and grid sensitivities
++11. Emissions components: direct, upstream, downstream
++12. Output gain, value added and cross-border intermediates
++13. Downstream: Ghosh supply-driven model
++14. Baselines, shares and the headline summary
++15. Optional: construction and equipment (capex)
++16. Other modules (TiVA indicators, projection)
++17. Assumptions and limitations
++18. Change log (methodology fixes)
++
++---
++
++## 1. Pipeline and files
++
++| Step | Script | Output |
++|---|---|---|
++| Emissions extension | `build_hybrid_emissions_extension.py` (+ `build_aea_crosswalk.py`, `build_gtap_aea_concordance.py`) | `hybrid_emissions/direct_emissions.csv` |
++| Canadian split (optional) | `canada_dsut_split.py`, `dc_origin_override.py` | split A, X, FD |
++| Main model | `global_datacentre_icio_model_v2.py` | upstream / downstream summaries and details |
++| Headline summary | `summarize_results.py` (run automatically) | `headline_summary.csv/.md`, `headline_top_origin_countries.csv` |
++| Projection (optional) | `project_icio.py`, `icio_projection/` | projected ICIO tables |
++
++Scenario inputs in `--data-dir`: `dc_output_scenarios.csv`,
++`dc_electricity_demand.csv`, `electricity_prices.csv`,
++`grid_emissions_factors.csv`, `water_coefficients.csv`,
++`us_customer_shares.csv`, optional `us_parent_operator_shares.csv`,
++`dc_sector_map.csv`, and for `--capex` `dc_capex.csv` and
++`dc_capex_composition.csv`.
++
++## 2. Notation and the ICIO table
++
++The OECD Inter-Country Input-Output table (2025 edition, reference year
++2022, current USD million) has $n$ country-industries (81 economies × 50
++industries; China and Mexico are each split into two blocks, CN1/CN2 and
++MX1/MX2).
++
++| Symbol | Meaning |
++|---|---|
++| $\mathbf{A}$ | technical coefficients, $a_{ij}$ = purchases from $i$ per USD of output of $j$ |
++| $\mathbf{x}$ | gross output (2022) |
++| $\mathbf{Z} = \mathbf{A}\hat{\mathbf{x}}$ | intermediate transactions |
++| $\mathbf{F}$ | final demand by category and country (columns such as `CAN_GFCF`) |
++| $\mathbf{L} = (\mathbf{I}-\mathbf{A})^{-1}$ | Leontief inverse |
++| $\mathbf{f}$ | direct emission intensity, t CO2e per USD million of output |
++| $\mathbf{v}$ | value-added coefficients, $v_j = 1 - \sum_i a_{ij}$ (value added plus net taxes on products) |
++| $S$ | the data-centre industries of the destination country (one, or CLD and DPH after the Canadian split) |
++| $E$ | the destination country's electricity industry (ICIO 35) |
++| $c(i)$ | the country of industry $i$ |
++
++The loader checks the accounting identity $\mathbf{x} = \mathbf{A}\mathbf{x} + \mathbf{F}\mathbf{1}$ to a relative tolerance (default 2%).
++
++All monetary scenario values are in constant 2022 USD so that they are
++consistent with the 2022 coefficients.
++
++## 3. Direct-emissions extension
++
++`build_hybrid_emissions_extension.py` produces one row per ICIO industry
++with direct (production-based, residence-principle) GHG emissions in
++t CO2e, using AR6 100-year GWPs.
++
++**Source selection is country-wide.** A country uses OECD Air Emission
++Accounts (AEA, `ACTIVITY_SCOPE=RES`, SEEA methodology) if usable
++resident-industry GHG data exist; otherwise GTAP 12. The two are never
++added for the same country. In the current extension AEA covers 33
++economies (EU members, the UK, Switzerland, Norway, Iceland, New Zealand
++and Türkiye); all other economies, including Canada, the United States,
++India, China and Australia, use GTAP 12.
++
++**AEA to ICIO.** Broad AEA aggregates are dropped when their detailed
++components are reported. An AEA activity $a$ that maps to several ICIO
++industries is allocated by 2022 gross output:
++
++$$E_i = E_a \frac{x_i}{\sum_{j \in a} x_j}, \qquad i \in a .$$
++
++**GTAP to ICIO.** GTAP CO2 covers fuel combustion by producing industries
++(domestic and imported fuels: `MDF + MMF`); non-CO2 gases are the
++production accounts `EMI_IO + EMI_ENDW + EMI_QO + EMI_IOP` (households
++`EMI_HH` and land use `EMI_LU` excluded). GTAP activities are mapped to
++AEA activities (weights, with pooled AEA pollutant shares where a GTAP
++activity covers several AEA activities) and then to ICIO industries as
++above, so both sources end in the same industry classification.
++Industries that are structural zeros in the ICIO are flagged rather than
++receiving emissions; ICIO 97T98 is out of scope.
++
++**Intensities.** In the main model
++
++$$f_i = \frac{E_i}{x_i}\quad (x_i>0), \qquad f_i = 0 \text{ if } x_i = 0 \text{ and } E_i = 0 .$$
++
++Electricity-generation emissions stay with ICIO 35 (no reallocation to
++users), so electricity use enters footprints through the supply chain.
++
++## 4. Canadian data-centre split (optional)
++
++ICIO has no data-centre industry; data centres sit in J62_63 (IT and other
++information services). With `--split-canada-dsut`, `CAN_J62_63` is split
++into CLD (cloud computing services), DPH (other NAICS 51821: hosting and
++data processing) and OTH (the rest) using the 2020 StatCan digital SUT and
++the 2022 SUT (table 36-10-0478-01):
++
++$$w_{518} = \frac{x_{51821}}{x_{5415}+x_{518}+x_{519}}, \quad
++s_{cloud} = \frac{\text{cloud output of } 51821}{\text{output of } 51821},$$
++
++$$w_{CLD} = w_{518}s_{cloud}, \quad w_{DPH} = w_{518}(1-s_{cloud}), \quad w_{OTH} = 1-w_{518}.$$
++
++Columns (cost structures): each input cell is split in proportion to
++$w_k r_k(g)$, where $r_k(g)$ is the SUT input intensity of subsector $k$
++for input group $g$ relative to J62_63. Rows (sales structures) are split
++by destination block (domestic/foreign × intermediate/final) and
++RAS-balanced. The split is exact in aggregate. Direct emissions of
++`CAN_J62_63` are split by output (equal intensity, default) or by
++electricity purchases. The data-centre shock then goes to CLD and DPH in
++proportion to their output. Other countries, including India, are not
++split.
++
++## 5. Country-of-origin override (optional)
++
++`dc_origin_override.py` re-weights the imported origins of selected inputs
++of CLD and DPH (for example ICIO 26, computers and electronics, using server
++import shares for HS 847150), keeps the domestic share and the import
++total, and re-balances the table with signed RAS so all rows still sum to
++output.
++
++## 6. From capacity to an output shock
++
++For country $c$ and year $t$, data-centre output in 2022 USD million is
++
++$$Q_{c,t} = MW_{c,t}\, p_{c} ,$$
++
++where $MW$ is installed (IT) capacity and $p$ is output (revenue) per MW
++per year (`price_mn_MW_2022`). Three shock bases are calculated:
++
++| Basis | Shock $\Delta Q$ | Electricity $\Delta G$ (GWh) | Use |
++|---|---|---|---|
++| `annual_increment` | $Q_t - Q_{t-1}$ | $G_t - G_{t-1}$ | year-on-year |
++| `cumulative_vs_first_year` | $Q_t - Q_{t_0}$ | $G_t - G_{t_0}$ | **headline** |
++| `2030_additional_output` | $Q_{2030}$ | $G_{2030}$ | upper bound: treats all 2030 output as new, although the 2022 ICIO already contains existing data centres |
++
++**Attribution lenses** multiply both output and electricity by a share
++$\alpha$: all expansion ($\alpha = 1$), US customer demand
++($\alpha$ = `us_customer_share`), US-parent operators
++($\alpha$ = `us_parent_operator_share`). They are alternative views and
++must not be added. A lens with $\alpha = 0$ produces no results.
++
++## 7. Physical metrics
++
++From `dc_electricity_demand.csv` (facility or IT basis, GWh or average MW
++× 8,760 h) and the power usage effectiveness (PUE):
++
++$$G^{fac} = G^{IT}\,PUE, \qquad G^{IT} = G^{fac}/PUE .$$
++
++Location-based grid emissions of the facility (reported in
++`physical_operational_metrics.csv`, kt CO2e):
++
++$$E^{grid} = G^{fac}\,\varepsilon^{grid}_{c,t} \quad (\text{GWh} \times \text{kg/kWh} = \text{kt}).$$
++
++Operational (direct) cooling water, million litres:
++
++$$W = G^{IT}\,WUE \quad (\text{GWh} \times \text{L/kWh} = \text{ML}).$$
++
++Indirect water (in the electricity and goods supply chains) is not
++calculated.
++
++**End-of-life server e-waste** (`ewaste.py`, written to
++`ewaste_metrics.csv`). From installed IT capacity $MW_{c,t}$:
++
++$$N^{rack} = MW\,\rho, \qquad N^{srv} = N^{rack}\,\sigma, \qquad
++W^{EOL} = N^{srv}\,m/1000 = MW\,\rho\,\sigma\,m/1000 \ \text{(tonnes)},$$
++
++with $\rho$ = 7.6 AI racks per MW, $\sigma$ = 18 servers (compute trays)
++per rack and $m$ = 130 kg per server for an NVIDIA GB300 NVL72 AI factory
++(NVIDIA Enterprise Reference Architecture, NVL72 AI factory with GB300
++NVL72, dual-plane networking), i.e. 17.784 t per MW. Check: 275 MW gives
++2,090 racks, 37,620 servers and 4,890.6 t.
++
++Reported: the stock $W^{EOL}_{c,t}$ (all servers installed in year $t$,
++which become e-waste at end of life), the part from capacity added since
++the first scenario year $W^{EOL}_{c,t}-W^{EOL}_{c,t_0}$, and, if
++`--server-lifetime-years` $L$ is given, the steady-state annual flow
++$W^{EOL}/L$. Parameters can be changed with `--racks-per-mw`,
++`--servers-per-rack`, `--server-kg`, or per country-year in
++`ewaste_coefficients.csv`. Scope: servers only (no networking, storage,
++power and cooling equipment, or batteries), and all capacity is treated as
++GB300-class AI capacity, which overstates mass for conventional
++cloud and colocation capacity.
++
++**Electricity cross-check** (`output_shock_comparison.csv`): the output
++change implied by the ICIO electricity coefficient,
++
++$$\Delta Q^{elec} = \frac{\Delta G \, P/1000}{a_{ES}},$$
++
++with $P$ the electricity price (USD/MWh). In the current inputs it is
++roughly 140–210 times the capacity-based shock (Canada 144–185×, India
++191–205×), i.e. the ICIO J62_63 column spends 0.36% (Canada) and 0.49%
++(India) of output on electricity whereas
++the physical data imply 59% (Canada) and 98% (India). This is why the
++physical (hybrid) sensitivity is the headline.
++
++## 8. Upstream: Leontief model with exogenous data-centre output
++
++The data-centre industries' output change is imposed, not derived from
++final demand. With $o$ the other industries, the mixed (exogenous-output)
++model is
++
++$$\Delta\mathbf{x}_S = \Delta\mathbf{q}, \qquad
++\Delta\mathbf{x}_o = (\mathbf{I}-\mathbf{A}_{oo})^{-1}\mathbf{A}_{oS}\,\Delta\mathbf{q},$$
++
++where $\Delta\mathbf{q} = \alpha\,\Delta Q\,\mathbf{w}$ distributes the
++shock over the target industries with weights $\mathbf{w}$.
++
++It is computed with the full Leontief factorisation: find the final
++demand $\Delta\mathbf{y}_S$ at the targets such that
++
++$$\Delta\mathbf{x} = \mathbf{L}\begin{bmatrix}\Delta\mathbf{y}_S\\ \mathbf{0}\end{bmatrix},
++\qquad \Delta\mathbf{y}_S = \mathbf{L}_{SS}^{-1}\Delta\mathbf{q},$$
++
++which is algebraically identical to the mixed model (the partitioned
++inverse gives $\mathbf{L}_{oS}\mathbf{L}_{SS}^{-1} = (\mathbf{I}-\mathbf{A}_{oo})^{-1}\mathbf{A}_{oS}$).
++It reproduces the targets exactly and does not double count the data
++centres' purchases from themselves.
++
++## 9. Electricity: ICIO-endogenous and hybrid columns
++
++**`icio_endogenous`.** Data-centre purchases follow the ICIO column
++$\mathbf{A}_{\cdot S}$, including its (small) electricity coefficient.
++
++**`physical_facility_demand` (hybrid).** The data-centre column is
++replaced by $\mathbf{A}'_{\cdot S}$. The electricity cost share of the
++output change is
++
++$$e = \frac{\Delta G\,P/1000}{\Delta Q}$$
++
++(the same for every attribution lens, because both numerator and
++denominator scale with $\alpha$). For target $k$:
++
++$$a'_{Ek} = e\,(1-\beta), \qquad
++a'_{ik} = a_{ik}\,\frac{1-e}{1-a_{Ek}} \quad (i \ne E),$$
++
++where $\beta$ is the behind-the-meter (BTM) share (zero except in the
++`btm_natgas` sensitivity). Scaling the other inputs (optional,
++`--no-rescale-other-inputs` disables it) keeps the column sum at or below
++one: when a larger part of each dollar of output pays for electricity, less
++is left for other inputs and value added. BTM electricity is not bought
++from the grid; its cost stays in the data-centre column as own-account
++generation.
++
++The model raises an error if $e \ge 1$ and logs a warning if $e > 0.5$,
++because then output per MW is low relative to electricity cost.
++
++The hybrid column is implemented without refactorising $(\mathbf{I}-\mathbf{A})$:
++the change in purchases is passed as extra intermediate demand on the
++non-target industries,
++
++$$\mathbf{d} = (\mathbf{A}'_{\cdot S} - \mathbf{A}_{\cdot S})\,\Delta\mathbf{q}, \qquad d_S = 0,$$
++
++$$\Delta\mathbf{y}_S = \mathbf{L}_{SS}^{-1}\big(\Delta\mathbf{q} - (\mathbf{L}\mathbf{d})_S\big), \qquad
++\Delta\mathbf{x} = \mathbf{L}_{\cdot S}\Delta\mathbf{y}_S + \mathbf{L}\mathbf{d},$$
++
++which gives $\Delta\mathbf{x}_o = (\mathbf{I}-\mathbf{A}_{oo})^{-1}\mathbf{A}'_{oS}\Delta\mathbf{q}$
++and $\Delta\mathbf{x}_S = \Delta\mathbf{q}$. Electricity output therefore
++rises by the data centres' purchases **plus** the electricity used
++indirectly by their suppliers (including the electricity sector's own
++supply chain). The previous version fixed total electricity output at the
++physical expenditure, which removed that indirect electricity and forced a
++negative final demand for electricity.
++
++## 10. Emission intensities and grid sensitivities
++
++| Sensitivity | Destination electricity intensity $f_E$ | Other industries |
++|---|---|---|
++| `average_grid` | 2022 extension, $E_E / x_E$ | 2022 extension |
++| `projected_grid` | $\varepsilon^{grid}_{c,t}\times 10^6 / P_{c,t}$ | 2022 extension |
++| `btm_natgas` | as `projected_grid` | 2022 extension |
++
++$\varepsilon^{grid}_{c,t}$ is the scenario-year grid factor
++(`kgco2_per_kwh`, kg/kWh = t/MWh) and $P$ the data-centre electricity price
++(USD/MWh), so $f_E$ is in t per USD million and
++$f_E \times \text{(purchased electricity, USD mn)} = \text{GWh} \times \varepsilon$.
++The conversion uses the data-centre price for all electricity-sector
++output of the destination country, which is an approximation.
++
++In the current run the 2022 extension implies 0.117 kg/kWh for Canada
++(1,923 t/USD mn × 60.6 USD/MWh) and 0.83 kg/kWh for India
++(10,249 t/USD mn × 81.3 USD/MWh), against projected 2030 factors of 0.038
++and 0.675.
++
++**BTM natural gas** (`btm_natgas`, physical sensitivity, `--btm-countries`,
++default Canada; share $\beta$ = `--btm-natgas-share`, default 0.92):
++
++$$E^{onsite} = \beta\,\alpha\,\Delta G \times 1000 \times \varepsilon^{gas}, \qquad
++E^{gas,up} = \beta\,\alpha\,\Delta G \times 1000 \times \varepsilon^{gas,up},$$
++
++where $\varepsilon^{gas}$ is `kgco2_per_kwh_natgas` (combustion) and
++$\varepsilon^{gas,up}$ is `--natgas-upstream-kgco2e-per-kwh` (extraction,
++processing, transport and methane leakage; default 0). The grid supplies
++only $(1-\beta)$ of facility electricity through $a'_{ES}$. The default
++0.92 is the share of planned Canadian capacity located in Alberta; it is an
++upper bound for the BTM share, not an observed value.
++
++## 11. Emissions components
++
++For a given scenario, $\mathbf{e} = \hat{\mathbf{f}}\Delta\mathbf{x}$ is the
++vector of emissions by origin industry. The components do not overlap:
++
++$$\text{Direct} = \sum_{k\in S} f_k \Delta x_k + E^{onsite}$$
++
++$$\text{Upstream (excl. direct)} = \sum_{i\notin S} f_i \Delta x_i + E^{gas,up}$$
++
++$$\text{of which purchased electricity} = f_E\, a'_{ES}\,\Delta\mathbf{q}$$
++
++$$\text{Footprint} = \text{Direct} + \text{Upstream} \quad (\text{column } \texttt{global\_upstream\_ghg\_tonnes\_co2e}).$$
++
++Emissions are also split by origin: destination country, United States,
++foreign (all other), and electricity industries (ICIO 35) worldwide.
++
++**Downstream** is defined in section 13 and is never added to the
++footprint.
++
++## 12. Output gain, value added and cross-border intermediates
++
++$$\text{Global output gain} = \mathbf{1}'\Delta\mathbf{x}, \quad
++\text{destination} = \sum_{c(i)=c}\Delta x_i, \quad
++\text{foreign} = \sum_{c(i)\ne c}\Delta x_i .$$
++
++Value added uses the hybrid coefficients for the data-centre columns:
++
++$$\Delta VA = \mathbf{v}'\Delta\mathbf{x}, \qquad v_k = 1-\sum_i a'_{ik}\ (k\in S).$$
++
++Cross-border intermediate sales (exports of intermediates) of industry $i$
++induced by the expansion:
++
++$$\Delta z_i^{exp} = \sum_{j:\,c(j)\ne c(i)} a'_{ij}\Delta x_j ,$$
++
++and intermediates imported directly by the destination country:
++
++$$\Delta z_i^{imp,c} = \sum_{j:\,c(j)=c} a'_{ij}\Delta x_j, \qquad c(i)\ne c .$$
++
++The headline summary ranks foreign supplier countries by the value of
++goods and services produced there for the expansion,
++$\sum_{c(i)=d}\Delta x_i$ (CN1+CN2 and MX1+MX2 are combined; the
++rest-of-world aggregate is reported separately), and reports the
++emissions emitted there, $\sum_{c(i)=d} e_i$, their cross-border
++intermediate sales and their three largest products by $\Delta x_i$.
++
++## 13. Downstream: Ghosh supply-driven model
++
++Allocation (sales) coefficients and the Ghosh inverse:
++
++$$\mathbf{B} = \hat{\mathbf{x}}^{-1}\mathbf{Z}, \qquad
++\mathbf{G} = (\mathbf{I}-\mathbf{B})^{-1}, \qquad
++\Delta\mathbf{x}'^{\,G} = \Delta\mathbf{v}'\mathbf{G}.$$
++
++Primary-input shocks are placed at the data-centre industries only and
++calibrated so the Ghosh output change at $S$ equals the same
++$\Delta\mathbf{q}$:
++
++$$\Delta\mathbf{v}_S = \big(\mathbf{G}^{\top}_{SS}\big)^{-1}\Delta\mathbf{q}, \qquad
++\Delta\mathbf{x}^G = \mathbf{G}^{\top}_{\cdot S}\Delta\mathbf{v}_S .$$
++
++$$\text{Downstream (excl. direct)} = \sum_{i\notin S} f_i\,\Delta x_i^G .$$
++
++Interpretation: income-based ("enabled") emissions of the industries that
++buy data-centre services, in proportion to their 2022 purchases (Lenzen
++and Murray 2010; Marques et al. 2012). As a quantity model the Ghosh model
++is implausible (Oosterhaven 1988), so these are an allocation of
++responsibility, not emissions caused by the expansion, and must never be
++added to upstream.
++
++The electricity industry is not a Ghosh target: the data centres consume
++their electricity, they do not sell it on. Forcing electricity output up in
++a supply-driven model would push it to all of the electricity sector's 2022
++customers (heavy industry), which is spurious. On-site generation is not
++added downstream either. Downstream results therefore do not depend on the
++electricity sensitivity.
++
++## 14. Baselines, shares and the headline summary
++
++2022 baseline emissions $\mathbf{f}'\mathbf{x}$: global 48.37 Gt CO2e of
++production emissions (households and land use excluded), Canada 0.70 Gt,
++India 4.11 Gt. Results are reported as % of the global baseline, % of the
++destination's baseline, and % change against the `average_grid` result.
++
++`summarize_results.py` picks one headline row per destination: last
++scenario year, `cumulative_vs_first_year`, `all_expansion`,
++`physical_facility_demand`, and `btm_natgas` where it exists, otherwise
++`projected_grid`, otherwise `average_grid` (all overridable). It writes
++`headline_summary.csv`, `headline_top_origin_countries.csv` and
++`headline_summary.md` (abstract-ready sentences).
++
++For outputs written before the fixes ("legacy"), it reconstructs the
++components as: direct = data-centre industry emissions + $0.92\,\Delta G\,\varepsilon^{gas}$;
++upstream = total − direct; downstream = the `icio_endogenous` Ghosh run
++(which had no electricity target) minus the data-centre industry's
++emissions. Value added, cross-border intermediates and purchased
++electricity are not available for legacy outputs.
++
++## 15. Optional: construction and equipment (`--capex`)
++
++Requires `dc_capex.csv` (country, year, capex per MW in 2022 USD million)
++and `dc_capex_composition.csv` (country, ICIO product, share; shares sum
++to one). Templates are written if they are missing; no default values are
++supplied. New capacity $\Delta MW$ (annual or cumulative) gives
++
++$$\Delta y_i = \Delta MW \cdot k \cdot s_{g(i)} \cdot
++\frac{F_{i,\,c\_GFCF}}{\sum_{j\in g(i)} F_{j,\,c\_GFCF}},$$
++
++i.e. capex $k$ per MW split over products $g$ by $s_g$ and over countries
++of origin by the destination's 2022 gross fixed capital formation
++purchases of each product. Then $\Delta\mathbf{x} = \mathbf{L}\Delta\mathbf{y}$
++and emissions $\mathbf{f}'\Delta\mathbf{x}$. These are one-off emissions
++in the build year, reported separately in
++`capex_embodied_emissions_summary.csv`.
++
++## 16. Other modules
++
++* `tiva_ghg_indicators.py` (`--tiva-ghg-indicators`): OECD TiVA-style
++  value added and GHG content of gross exports, final demand and the Ghosh
++  forward multiplier, on the (split) table with $\mathbf{f}$ in place of
++  $\mathbf{v}$.
++* `project_icio.py` (optional): projects the table 2023–2030 with OECD
++  bridge regressions, ARIMA or EIA/IMF drivers and RAS. The headline
++  results use the 2022 table and 2022 intensities; if a projected table is
++  used, the emissions extension should be rebuilt for that year (a warning
++  is logged when `--emissions-extension-year` differs from `--icio-year`).
++
++## 17. Assumptions and limitations
++
++1. Fixed 2022 technology and intensities except the destination
++   electricity sector under `projected_grid` / `btm_natgas`.
++2. The data-centre proxy is J62_63 (or CLD/DPH for Canada); for India its
++   non-electricity cost structure is that of IT services in general.
++3. Output per MW (`price_mn_MW_2022`) drives the shock size and the
++   electricity cost share. Current inputs imply electricity costs of 59%
++   (Canada) and 98% (India) of data-centre revenue, with capacity running
++   at 100% utilisation (facility MW = IT MW × PUE). With such shares the
++   hybrid column leaves little room for other inputs (India: other inputs
++   scaled to 2.4% of the ICIO column).
++4. Electricity intensity is a national average converted with the
++   data-centre price; provincial/state differences are not modelled.
++5. BTM share 0.92 is an upper bound; gas upstream emissions default to
++   zero.
++6. Construction and IT hardware are excluded unless `--capex` is used.
++7. Indirect water is not estimated; e-waste covers servers only at
++   GB300 NVL72 density (section 7).
++8. Downstream (Ghosh) results are an income-based allocation, not
++   impacts.
++9. Monetary values in 2022 USD; no price effects or substitution.
++
++## 18. Change log (methodology fixes, November 2026)
++
++| Issue in the previous version | Fix | Effect on results |
++|---|---|---|
++| Physical sensitivity fixed *total* domestic electricity output at the data centres' expenditure (indirect electricity dropped; negative electricity final demand) | Hybrid column: electricity coefficient = measured cost share, other inputs rescaled (section 9) | More domestic electricity (indirect use kept); fewer non-electricity inputs |
++| Electricity shock not scaled by the attribution share (a lens with share 0 still produced up to 11.9 Mt in Canada) | Electricity scales with output through the hybrid column; zero shock gives no rows | Attribution lenses now consistent |
++| Ghosh run also targeted the electricity industry, pushing electricity to all its customers | Ghosh targets the data-centre industries only | Downstream fell from 12.40 to 0.53 Mt (Canada) and from 53.45 to 0.87 Mt (India), excluding direct |
++| BTM adjustment added to upstream and to downstream | On-site generation is direct, reported once | No double counting |
++| BTM displaced the 2022 extension grid (0.117 kg/kWh), not the projected grid (0.038) | `projected_grid` intensity; BTM builds on it | Canadian BTM increase over grid supply 9.77 Mt instead of 7.35 Mt (2025–2030 cumulative) |
++| Hard-coded BTM share 0.92, combustion only | `--btm-natgas-share`, `--natgas-upstream-kgco2e-per-kwh` | Sensitivities possible |
++| Direct emissions counted in both upstream and downstream | Direct / upstream / downstream reported separately | Non-overlapping components |
++| No output gain, value added or trade measures | Global/domestic/foreign output, value added, cross-border intermediates | New columns |
++| No embodied capex | Optional `--capex` module | Not run by default |
++| E-waste calculated outside the model | `ewaste.py`, in `ewaste_metrics.csv` and the headline summary | Same values as before (17.784 t/MW) |
++| `2030_additional_output` not flagged | `shock_basis_note` marks it as an upper bound | — |
++
++## References
++
++Dietzenbacher, E. (1997). In vindication of the Ghosh model: a
++reinterpretation as a price model. *Journal of Regional Science* 37(4).
++
++Lenzen, M. and Murray, J. (2010). Conceptualising environmental
++responsibility. *Ecological Economics* 70(2).
++
++Marques, A., Rodrigues, J., Lenzen, M. and Domingos, T. (2012).
++Income-based environmental responsibility. *Ecological Economics* 84.
++
++Miller, R. E. and Blair, P. D. (2022). *Input-Output Analysis:
++Foundations and Extensions*, 3rd ed., Cambridge University Press
++(mixed exogenous/endogenous models; supply-side models).
++
++Oosterhaven, J. (1988). On the plausibility of the supply-driven
++input-output model. *Journal of Regional Science* 28(2).
+diff --git a/ewaste.py b/ewaste.py
+new file mode 100644
+index 0000000..981e437
+--- /dev/null
++++ b/ewaste.py
+@@ -0,0 +1,117 @@
++#!/usr/bin/env python3
++"""
++End-of-life server e-waste from data-centre capacity.
++
++    servers(MW)          = MW x racks_per_mw x servers_per_rack
++    e-waste (tonnes)     = servers x server_kg / 1000
++                         = MW x racks_per_mw x servers_per_rack x server_kg / 1000
++
++Defaults describe an NVIDIA GB300 NVL72 AI factory (NVIDIA Enterprise
++Reference Architecture, NVL72 AI factory with GB300 NVL72, dual-plane
++networking): 7.6 racks per MW of IT capacity, 18 compute trays (servers)
++per rack and 130 kg per server, i.e. 17.784 t per MW.
++Check: 275 MW -> 2,090 racks -> 37,620 servers -> 4,890.6 t.
++
++Capacity is IT capacity (dc_capacity_mw in dc_output_scenarios.csv).
++
++Reported measures
++-----------------
++ewaste_stock_tonnes
++    Server mass installed in the year: the e-waste generated when all of
++    that capacity's servers reach end of life (EOL).
++ewaste_new_capacity_tonnes
++    The same for capacity added since the first scenario year.
++ewaste_annual_tonnes
++    Only with a server lifetime L (years): steady-state yearly EOL flow,
++    stock / L.
++
++Scope: servers only (no networking, storage, power or cooling equipment,
++batteries or packaging); every MW is assumed to be AI capacity at GB300
++NVL72 density. Optional per country-year coefficients can be supplied in
++ewaste_coefficients.csv (country, year, racks_per_mw, servers_per_rack,
++server_kg) in --data-dir.
++"""
++from __future__ import annotations
++
++from pathlib import Path
++from typing import Optional
++
++import numpy as np
++import pandas as pd
++
++RACKS_PER_MW = 7.6
++SERVERS_PER_RACK = 18
++SERVER_KG = 130.0
++COEFFICIENT_FILE = "ewaste_coefficients.csv"
++SOURCE = (
++    "NVIDIA Enterprise Reference Architecture: NVL72 AI factory with GB300 "
++    "NVL72, dual-plane networking (docs.nvidia.com)"
++)
++
++
++def tonnes_per_mw(racks_per_mw=RACKS_PER_MW, servers_per_rack=SERVERS_PER_RACK, server_kg=SERVER_KG):
++    return racks_per_mw * servers_per_rack * server_kg / 1000.0
++
++
++def ewaste_metrics(
++    capacity: pd.DataFrame,
++    racks_per_mw: float = RACKS_PER_MW,
++    servers_per_rack: float = SERVERS_PER_RACK,
++    server_kg: float = SERVER_KG,
++    server_lifetime_years: Optional[float] = None,
++    coefficients: Optional[pd.DataFrame] = None,
++) -> pd.DataFrame:
++    """
++    capacity: columns country, year, dc_capacity_mw (IT MW).
++    coefficients: optional country-year overrides of the three parameters.
++    """
++    for value, name in [(racks_per_mw, "racks_per_mw"), (servers_per_rack, "servers_per_rack"), (server_kg, "server_kg")]:
++        if not np.isfinite(value) or value <= 0:
++            raise ValueError(f"{name} must be positive.")
++    if server_lifetime_years is not None and server_lifetime_years <= 0:
++        raise ValueError("server_lifetime_years must be positive.")
++
++    df = capacity[["country", "year", "dc_capacity_mw"]].copy()
++    df["country"] = df["country"].astype(str).str.strip().str.upper()
++    df["year"] = df["year"].astype(int)
++    df = df.sort_values(["country", "year"]).reset_index(drop=True)
++
++    df["racks_per_mw"] = float(racks_per_mw)
++    df["servers_per_rack"] = float(servers_per_rack)
++    df["server_kg"] = float(server_kg)
++    df["coefficient_source"] = SOURCE
++
++    if coefficients is not None and not coefficients.empty:
++        c = coefficients.copy()
++        c["country"] = c["country"].astype(str).str.strip().str.upper()
++        c["year"] = c["year"].astype(int)
++        if c.duplicated(["country", "year"]).any():
++            raise ValueError(f"{COEFFICIENT_FILE} has duplicate country-year rows.")
++        cols = [k for k in ("racks_per_mw", "servers_per_rack", "server_kg") if k in c.columns]
++        df = df.merge(c[["country", "year", *cols]], on=["country", "year"], how="left", suffixes=("", "_override"))
++        for k in cols:
++            override = df.pop(f"{k}_override")
++            if (override.dropna() <= 0).any():
++                raise ValueError(f"{COEFFICIENT_FILE}: {k} must be positive.")
++            used = override.notna()
++            df.loc[used, k] = override[used]
++            df.loc[used, "coefficient_source"] = COEFFICIENT_FILE
++
++    df["tonnes_per_mw"] = df["racks_per_mw"] * df["servers_per_rack"] * df["server_kg"] / 1000.0
++    df["racks"] = df["dc_capacity_mw"] * df["racks_per_mw"]
++    df["servers"] = df["racks"] * df["servers_per_rack"]
++    df["ewaste_stock_tonnes"] = df["dc_capacity_mw"] * df["tonnes_per_mw"]
++    df["ewaste_new_capacity_tonnes"] = (
++        df["ewaste_stock_tonnes"]
++        - df.groupby("country")["ewaste_stock_tonnes"].transform("first")
++    )
++    df["server_lifetime_years"] = server_lifetime_years if server_lifetime_years else np.nan
++    df["ewaste_annual_tonnes"] = (
++        df["ewaste_stock_tonnes"] / server_lifetime_years if server_lifetime_years else np.nan
++    )
++    return df
++
++
++def load_coefficients(data_dir: Path) -> Optional[pd.DataFrame]:
++    path = Path(data_dir) / COEFFICIENT_FILE
++    return pd.read_csv(path) if path.exists() else None
+diff --git a/global_datacentre_icio_model_v2.py b/global_datacentre_icio_model_v2.py
+index c5f38d9..5391e77 100644
+--- a/global_datacentre_icio_model_v2.py
++++ b/global_datacentre_icio_model_v2.py
+@@ -38,11 +38,36 @@ Industry emissions intensities are calculated as:
+ 
+ The source field from the hybrid extension is retained for auditing.
+ 
+-Leontief calculation
+---------------------
++Leontief calculation (upstream)
++------------------------------
+ The supplied gross-output shock is converted to a final-demand shock so
+ that the resulting change in the targeted proxy-sector gross output equals
+-the specified target.
++the specified target (exogenous-output, or "mixed", model).
++
++In the physical_facility_demand sensitivity the data-centre column is
++hybridised: its domestic-electricity coefficient is replaced by the
++measured electricity cost share (facility GWh x price / output) and the
++other inputs are scaled down so the column still sums to one. Electricity
++demand therefore scales with the output shock and the attribution lens,
++and indirect electricity use by suppliers is still modelled.
++
++Ghosh calculation (downstream)
++------------------------------
++Primary-input shocks at the data-centre industries reproduce the same
++output change; the resulting supply push gives income-based ("enabled")
++emissions. There is no electricity target in the Ghosh run.
++
++Emissions components (never add upstream and downstream)
++--------------------------------------------------------
++direct      data-centre industries' own emissions + on-site BTM generation
++upstream    supply chain excluding direct (incl. purchased electricity)
++downstream  Ghosh emissions excluding direct
++
++Grid sensitivities: average_grid (2022 extension), projected_grid
++(scenario-year grid factor for the destination electricity sector) and
++btm_natgas (projected grid with --btm-natgas-share generated on site).
++
++See docs/methodology.md for the full mathematical description.
+ 
+ Attribution
+ -----------
+@@ -92,6 +117,7 @@ import pyreadr
+ from scipy.linalg import lu_factor, lu_solve
+ 
+ import canada_dsut_split as cds
++import ewaste
+ import tiva_ghg_indicators as tgi
+ 
+ 
+@@ -2127,33 +2153,60 @@ def gross_output_to_primary_inputs(
+ # Leontief calculation
+ # ---------------------------------------------------------------------
+ 
++GRID_SENSITIVITIES = ("average_grid", "projected_grid", "btm_natgas")
++
++SHOCK_BASIS_NOTES = {
++    "annual_increment": (
++        "Change in data-centre output from the previous scenario year."
++    ),
++    "cumulative_vs_first_year": (
++        "Change in data-centre output relative to the first scenario year "
++        "(preferred incremental measure)."
++    ),
++    "2030_additional_output": (
++        "UPPER BOUND: the entire 2030 data-centre output is treated as new, "
++        "although the 2022 ICIO already contains existing data centres."
++    ),
++}
++
++
+ def gross_output_to_final_demand(
+     lu,
+     piv,
+     n: int,
+     target_indices: list[int],
+     delta_x_target: np.ndarray,
++    extra_demand: Optional[np.ndarray] = None,
+ ):
+     """
+     Convert target gross-output changes into final-demand changes.
+ 
+-    If delta_x_target is the desired change in gross output for the target
+-    industries, calculate:
++    The target industries S are treated as exogenous (Miller and Blair's
++    "mixed" model). Without ``extra_demand`` the result is
++
++        delta_y_S = inverse(L_SS) @ delta_x_S
++        delta_x   = L[:, S] @ delta_y_S
++
++    which is identical to delta_x_o = (I - A_oo)^-1 A_oS delta_x_S.
+ 
+-        delta_y_target = inverse(L_SS) @ delta_x_target
++    ``extra_demand`` is an additional intermediate-demand vector on the
++    non-target industries. It is used when the purchases of the target
++    industries differ from their ICIO column (hybrid electricity column):
++    extra = (A'[:, S] - A[:, S]) @ delta_x_S. The result is then
+ 
+-        delta_x = L[:, S] @ delta_y_target
++        delta_x_o = (I - A_oo)^-1 A'_oS delta_x_S
+ 
+-    This ensures that the resulting gross-output changes in the target
+-    industries equal the specified targets.
++    while delta_x_S still equals the specified targets.
+     """
++    target_indices = list(target_indices)
++    delta_x_target = np.asarray(delta_x_target, dtype=float)
++
+     rhs = np.zeros((n, len(target_indices)), dtype=float)
+     rhs[target_indices, np.arange(len(target_indices))] = 1.0
+ 
+     L_columns = lu_solve((lu, piv), rhs)
+-
+     L_ss = L_columns[target_indices, :]
+-    
++
+     if not np.isfinite(L_ss).all():
+         raise ValueError("Target-sector Leontief submatrix contains non-finite values.")
+ 
+@@ -2162,17 +2215,29 @@ def gross_output_to_final_demand(
+             "Target-sector Leontief submatrix is numerically ill-conditioned."
+         )
+ 
+-    delta_y_target = np.linalg.solve(L_ss, delta_x_target)
++    if extra_demand is None:
++        induced_by_extra = np.zeros(n, dtype=float)
++    else:
++        extra = np.asarray(extra_demand, dtype=float).copy()
++        if extra.shape != (n,):
++            raise ValueError("extra_demand must have one value per industry.")
++        # Purchases from the target industries themselves do not induce
++        # anything: target output is exogenous.
++        extra[target_indices] = 0.0
++        induced_by_extra = lu_solve((lu, piv), extra) if np.any(extra) else np.zeros(n)
++
++    delta_y_target = np.linalg.solve(
++        L_ss,
++        delta_x_target - induced_by_extra[target_indices],
++    )
+ 
+     delta_y = np.zeros(n, dtype=float)
+     delta_y[target_indices] = delta_y_target
+ 
+-    delta_x = lu_solve((lu, piv), delta_y)
+-    
++    delta_x = L_columns @ delta_y_target + induced_by_extra
++
+     if not np.isfinite(delta_y).all() or not np.isfinite(delta_x).all():
+-        raise ValueError(
+-            "Leontief solution contains non-finite values."
+-        )
++        raise ValueError("Leontief solution contains non-finite values.")
+ 
+     if not np.allclose(
+         delta_x[target_indices],
+@@ -2188,6 +2253,82 @@ def gross_output_to_final_demand(
+     return delta_y, delta_x
+ 
+ 
++def hybrid_target_columns(
++    A_np: np.ndarray,
++    target_indices: list[int],
++    electricity_index: int,
++    electricity_cost_share: float,
++    grid_share: float = 1.0,
++    rescale_other_inputs: bool = True,
++):
++    """
++    Replace the domestic-electricity coefficient of the data-centre columns
++    with the physically measured electricity cost share.
++
++    electricity_cost_share  e = facility GWh x price / data-centre output
++    grid_share              share of that electricity bought from the grid
++                            (1 - behind-the-meter share)
++
++    With ``rescale_other_inputs`` every other coefficient of the column
++    (including value added, implicitly) is multiplied by
++
++        r_k = (1 - e) / (1 - a_Ek)
++
++    so that the column still sums to at most one: the more of each dollar
++    of data-centre output goes to electricity, the less goes to everything
++    else. Behind-the-meter electricity is not bought from the grid; its
++    cost stays in the data-centre column as own-account generation.
++
++    Returns (new_columns, rescale_factors).
++    """
++    if not np.isfinite(electricity_cost_share):
++        raise ValueError("Electricity cost share must be finite.")
++
++    if electricity_cost_share < 0 or electricity_cost_share >= 1:
++        raise ValueError(
++            "Electricity expenditure must be between 0% and 100% of "
++            f"data-centre output; found {electricity_cost_share:.3f}. "
++            "Check output per MW (price_mn_MW_2022), the electricity price, "
++            "PUE and the utilisation implied by electricity_mw."
++        )
++
++    if not 0 <= grid_share <= 1:
++        raise ValueError("grid_share must lie between zero and one.")
++
++    columns = A_np[:, target_indices].copy()
++    old_electricity = columns[electricity_index, :].copy()
++
++    if rescale_other_inputs:
++        factors = (1.0 - electricity_cost_share) / (1.0 - old_electricity)
++        if (factors < 0).any() or not np.isfinite(factors).all():
++            raise ValueError("Invalid input rescaling factor for the hybrid column.")
++        columns = columns * factors[np.newaxis, :]
++    else:
++        factors = np.ones(len(target_indices))
++
++    columns[electricity_index, :] = electricity_cost_share * grid_share
++
++    if (columns.sum(axis=0) > 1 + 1e-9).any():
++        raise ValueError(
++            "The hybrid data-centre column sums to more than one (negative "
++            "value added). Enable rescaling of the other inputs."
++        )
++
++    return columns, factors
++
++
++def _attribution_shares(row) -> dict[str, float]:
++    return {
++        "all_expansion": 1.0,
++        "us_customer_demand": float(row.us_customer_share),
++        "us_parent_owned_operator": (
++            float(row.us_parent_operator_share)
++            if pd.notna(row.us_parent_operator_share)
++            else np.nan
++        ),
++    }
++
++
+ def run_leontief(
+     A: pd.DataFrame,
+     X: pd.Series,
+@@ -2195,16 +2336,41 @@ def run_leontief(
+     extension: pd.DataFrame,
+     dc_map: pd.DataFrame,
+     scenarios: pd.DataFrame,
++    btm_natgas_share: float = 0.92,
++    btm_countries: Iterable[str] = ("CAN",),
++    natgas_upstream_kgco2e_per_kwh: float = 0.0,
++    rescale_other_inputs: bool = True,
+ ):
+-    """Calculate upstream and downstream output changes and GHG emissions."""
+-
++    """
++    Upstream (Leontief), direct and downstream (Ghosh) output changes and
++    GHG emissions for every scenario row, shock basis and attribution lens.
++
++    Electricity-demand sensitivities
++        icio_endogenous           data-centre purchases follow the ICIO column
++        physical_facility_demand  hybrid column: the domestic-electricity
++                                  coefficient equals the measured electricity
++                                  cost share (see hybrid_target_columns)
++
++    Grid-emissions sensitivities
++        average_grid     2022 hybrid emissions extension (ICIO-consistent)
++        projected_grid   destination electricity sector intensity replaced by
++                         the scenario-year grid factor (kg CO2e/kWh), converted
++                         to t/USD mn with the data-centre electricity price
++        btm_natgas       projected_grid, with a share of facility electricity
++                         generated behind the meter from natural gas (physical
++                         sensitivity and btm_countries only)
++
++    Emissions are reported as
++        direct      data-centre industries' own emissions plus on-site
++                    (behind-the-meter) generation
++        upstream    supply-chain emissions excluding direct (includes
++                    purchased grid electricity, reported separately)
++        downstream  Ghosh (income-based) emissions excluding direct, from a
++                    supply push at the data-centre industries only
++    """
+     keys = A.index.tolist()
+     n = len(keys)
+ 
+-    # ------------------------------------------------------------
+-    # Align and validate reference gross output.
+-    # ------------------------------------------------------------
+-
+     x_ref = X.reindex(keys).to_numpy(dtype=float)
+ 
+     if not np.isfinite(x_ref).all():
+@@ -2221,201 +2387,109 @@ def run_leontief(
+             "ICIO matrix rows and columns must have identical industry ordering."
+         )
+ 
+-    # ------------------------------------------------------------
+-    # Factorize Leontief and Ghosh systems.
+-    # ------------------------------------------------------------
++    if not 0 <= btm_natgas_share <= 1:
++        raise ValueError("btm_natgas_share must lie between zero and one.")
+ 
+-    LOG.info(
+-        "Factorizing Leontief and Ghosh systems with %s industries.",
+-        n,
+-    )
++    btm_countries = {str(c).upper() for c in btm_countries}
+ 
+-    # Leontief: x = (I - A)^(-1) y
+-    M = np.eye(n, dtype=float) - A.to_numpy(dtype=float)
++    LOG.info("Factorizing Leontief and Ghosh systems with %s industries.", n)
+ 
+-    lu, piv = lu_factor(M, check_finite=True)
++    A_np = A.to_numpy(dtype=float)
++    lu, piv = lu_factor(np.eye(n) - A_np, check_finite=True)
+ 
+-    if (
+-        not np.isfinite(lu).all()
+-        or np.any(np.abs(np.diag(lu)) < 1e-12)
+-    ):
+-        raise ValueError(
+-            "The Leontief system is singular or numerically unstable."
+-        )
++    if not np.isfinite(lu).all() or np.any(np.abs(np.diag(lu)) < 1e-12):
++        raise ValueError("The Leontief system is singular or numerically unstable.")
+ 
+-    # Ghosh: x = (I - C.T)^(-1) v
+     ghosh_lu = build_ghosh_system(A, x_ref)
+ 
+     if (
+         not np.isfinite(ghosh_lu[0]).all()
+         or np.any(np.abs(np.diag(ghosh_lu[0])) < 1e-12)
+     ):
+-        raise ValueError(
+-            "The Ghosh system is singular or numerically unstable."
+-        )
++        raise ValueError("The Ghosh system is singular or numerically unstable.")
+ 
+-    # ------------------------------------------------------------
+-    # Prepare emissions extension and industry lookups.
+-    # ------------------------------------------------------------
++    # Value-added coefficients (value added plus net taxes on products).
++    va_coefficients = 1.0 - A_np.sum(axis=0)
+ 
+-    extension = (
+-        extension
+-        .set_index("io_key")
+-        .loc[keys]
+-    )
++    extension = extension.set_index("io_key").loc[keys]
++    base_intensity = extension["ghg_tonnes_per_usd_mn"].to_numpy(dtype=float)
+ 
+-    average_grid_intensity = (
+-        extension["ghg_tonnes_per_usd_mn"].to_numpy(dtype=float)
+-    )
+-
+-    if not np.isfinite(average_grid_intensity).all():
++    if not np.isfinite(base_intensity).all():
+         raise ValueError(
+-            "The hybrid emissions extension contains non-finite "
+-            "emissions intensities."
++            "The hybrid emissions extension contains non-finite emissions intensities."
+         )
+ 
+     emissions_source = extension["source"].to_numpy()
+ 
+-    # Share of Canadian data-centre electricity demand supplied by BTM gas.
+-    BTM_NATGAS_SHARE = 0.92
+-
+-    LOG.info(
+-        "BTM natural-gas share of Canadian data-centre electricity demand: %.1f%%",
+-        100.0 * BTM_NATGAS_SHARE,
+-    )
+-
+     sector_lookup = sector_map.set_index("io_key").loc[keys]
+     country_by_key = sector_lookup["country"].to_numpy()
+-
+-    electricity_codes = set()
+-
+-    if "is_electricity_sector" in sector_map.columns:
+-        flag = (
+-            sector_map["is_electricity_sector"]
+-            .astype(str)
+-            .str.lower()
+-        )
+-
+-        electricity_codes = set(
+-            sector_map.loc[
+-                flag.isin(["true", "1", "yes"]),
+-                "io_key",
+-            ]
+-        )
++    sector_by_key = sector_lookup["sector_code"].astype(str).to_numpy()
+ 
+     electricity_mask = np.isin(
+-        keys,
+-        list(electricity_codes),
+-    )
+-
+-    # ------------------------------------------------------------
+-    # Calculate 2022 baseline emissions.
+-    # ------------------------------------------------------------
+-
+-    baseline_emissions = x_ref * average_grid_intensity
+-
+-    if not np.isfinite(baseline_emissions).all():
+-        raise ValueError(
+-            "The 2022 baseline emissions calculation produced "
+-            "non-finite values."
+-        )
+-
+-    baseline_total_emissions = float(baseline_emissions.sum())
+-
+-    baseline_us_emissions = float(
+-        baseline_emissions[country_by_key == "USA"].sum()
++        sector_by_key, ["35", "D35"]
+     )
+ 
+-    baseline_electricity_emissions = float(
+-        baseline_emissions[electricity_mask].sum()
+-    )
+-
+-    # ------------------------------------------------------------
+-    # Construct target industry lookups.
+-    # ------------------------------------------------------------
+-
+-    target_keys_by_country = {
+-        row.country: dc_targets_of(row)
+-        for row in dc_map.itertuples(index=False)
+-    }
+-
+-    key_to_index = {
+-        key: i
+-        for i, key in enumerate(keys)
++    country_blocks = {
++        country: np.flatnonzero(country_by_key == country)
++        for country in pd.unique(country_by_key)
+     }
+ 
+-    missing_target_keys = [
+-        key
+-        for targets in target_keys_by_country.values()
+-        for key, _ in targets
+-        if key not in key_to_index
+-    ]
++    baseline_emissions = x_ref * base_intensity
++    baseline_total = float(baseline_emissions.sum())
++    baseline_us = float(baseline_emissions[country_by_key == "USA"].sum())
++    baseline_electricity = float(baseline_emissions[electricity_mask].sum())
+ 
+-    if missing_target_keys:
+-        raise ValueError(
+-            f"Data-centre proxy industries are missing from ICIO: "
+-            f"{missing_target_keys}"
+-        )
+-
+-    # country -> (indices, weights). A single proxy has weight one; a split
+-    # proxy (e.g. CAN_J62_63_CLD + _DPH) shares the shock by output weight.
+-    target_index_by_country = {
+-        country: (
+-            [key_to_index[key] for key, _ in targets],
+-            np.array([weight for _, weight in targets], dtype=float),
+-        )
+-        for country, targets in target_keys_by_country.items()
+-    }
++    key_to_index = {key: i for i, key in enumerate(keys)}
+ 
++    target_index_by_country = {}
+     electricity_index_by_country = {}
+ 
+     for row in dc_map.itertuples(index=False):
++        targets = dc_targets_of(row)
++        missing = [k for k, _ in targets if k not in key_to_index]
++        if missing:
++            raise ValueError(f"Data-centre proxy industries are missing from ICIO: {missing}")
++        target_index_by_country[row.country] = (
++            [key_to_index[k] for k, _ in targets],
++            np.array([w for _, w in targets], dtype=float),
++        )
+         if row.electricity_io_key not in key_to_index:
+             raise ValueError(
+-                f"Electricity industry {row.electricity_io_key} "
+-                f"for {row.country} is missing from ICIO."
++                f"Electricity industry {row.electricity_io_key} for "
++                f"{row.country} is missing from ICIO."
+             )
++        electricity_index_by_country[row.country] = key_to_index[row.electricity_io_key]
+ 
+-        electricity_index_by_country[row.country] = (
+-            key_to_index[row.electricity_io_key]
+-        )
+-
+-    # ------------------------------------------------------------
+-    # Prepare result containers.
+-    # ------------------------------------------------------------
+-
+-    detail_rows = []
+-    summary_rows = []
+-    final_demand_rows = []
+-
+-    downstream_detail_rows = []
+-    downstream_summary_rows = []
+-
+-    required_shock_columns = [
++    required = [
+         "dc_output_shock_usd_mn",
+         "us_customer_output_shock_usd_mn",
+         "us_parent_output_shock_usd_mn",
+     ]
+-
+-    missing_columns = [
+-        col
+-        for col in required_shock_columns
+-        if col not in scenarios.columns
+-    ]
+-
++    missing_columns = [c for c in required if c not in scenarios.columns]
+     if missing_columns:
+-        raise ValueError(
+-            f"Missing 2030 output shock columns: {missing_columns}"
+-        )
++        raise ValueError(f"Missing 2030 output shock columns: {missing_columns}")
+ 
+     if not scenarios["year"].eq(2030).any():
+-        raise ValueError(
+-            "The scenario data contains no 2030 observations."
+-        )
++        raise ValueError("The scenario data contains no 2030 observations.")
+ 
+-    # ------------------------------------------------------------
+-    # Main scenario loop.
+-    # ------------------------------------------------------------
++    detail_rows = []
++    summary_rows = []
++    final_demand_rows = []
++    downstream_detail_rows = []
++    downstream_summary_rows = []
++
++    def basis_values(row, basis):
++        """(data-centre output, facility GWh) for the full expansion."""
++        if basis == "annual_increment":
++            return float(row.dc_output_yoy_usd_mn), float(row.facility_gwh_yoy)
++        if basis == "cumulative_vs_first_year":
++            return (
++                float(row.dc_output_cumulative_usd_mn),
++                float(row.facility_gwh_cumulative),
++            )
++        if basis == "2030_additional_output":
++            return float(row.dc_output_shock_usd_mn), float(row.facility_electricity_gwh)
++        raise ValueError(f"Unrecognized shock basis: {basis}")
+ 
+     for row in scenarios.itertuples(index=False):
+ 
+@@ -2423,661 +2497,424 @@ def run_leontief(
+         year = int(row.year)
+ 
+         if country not in target_index_by_country:
+-            raise ValueError(
+-                f"No data-centre proxy industry is mapped for {country}."
+-            )
++            raise ValueError(f"No data-centre proxy industry is mapped for {country}.")
+ 
+         target_dc_indices, target_dc_weights = target_index_by_country[country]
++        electricity_index = electricity_index_by_country[country]
++        destination_mask = country_by_key == country
++        destination_block = country_blocks[country]
+ 
+-        shock_definitions = {
+-            "all_expansion": row.dc_output_yoy_usd_mn,
+-            "us_customer_demand": row.us_customer_output_yoy_usd_mn,
+-            "us_parent_owned_operator": row.us_parent_output_yoy_usd_mn,
+-        }
++        price = float(row.price_2022_usd_mwh)
++        if not np.isfinite(price) or price <= 0:
++            raise ValueError("Electricity price must be positive and finite.")
+ 
+-        cumulative_definitions = {
+-            "all_expansion": row.dc_output_cumulative_usd_mn,
+-            "us_customer_demand": row.us_customer_output_cumulative_usd_mn,
+-            "us_parent_owned_operator": row.us_parent_output_cumulative_usd_mn,
+-        }
+-
+-        if year == 2030:
+-            additional_output_definitions = {
+-                "all_expansion": row.dc_output_shock_usd_mn,
+-                "us_customer_demand": row.us_customer_output_shock_usd_mn,
+-                "us_parent_owned_operator": row.us_parent_output_shock_usd_mn,
+-            }
+-        else:
+-            additional_output_definitions = {}
+-
+-        shock_basis_definitions = [
+-            ("annual_increment", shock_definitions),
+-            ("cumulative_vs_first_year", cumulative_definitions),
+-            ("2030_additional_output", additional_output_definitions),
+-        ]
+-
+-        for shock_basis, definitions in shock_basis_definitions:
+-
+-            for attribution, shock in definitions.items():
+-
+-                if pd.isna(shock):
+-                    continue
+-
+-                shock = float(shock)
+-
+-                if not np.isfinite(shock):
+-                    raise ValueError(
+-                        "ITC gross-output shock is non-finite."
+-                    )
+-
+-                # --------------------------------------------------------
+-                # Determine physical electricity demand and expenditure.
+-                # --------------------------------------------------------
+-
+-                if shock_basis == "annual_increment":
+-                    electricity_change_gwh = float(row.facility_gwh_yoy)
+-
+-                elif shock_basis == "cumulative_vs_first_year":
+-                    electricity_change_gwh = float(
+-                        row.facility_gwh_cumulative
+-                    )
++        # Projected-grid intensity of the destination electricity sector:
++        # kg/kWh = t/MWh; t/MWh / (USD/MWh) * 1e6 = t per USD mn.
++        projected_intensity = base_intensity.copy()
++        projected_intensity[electricity_index] = (
++            float(row.kgco2_per_kwh) * 1e6 / price
++        )
+ 
+-                elif shock_basis == "2030_additional_output":
+-                    electricity_change_gwh = float(
+-                        row.facility_electricity_gwh
+-                    )
++        natgas_factor = (
++            float(row.kgco2_per_kwh_natgas)
++            if pd.notna(row.kgco2_per_kwh_natgas)
++            else np.nan
++        )
+ 
+-                else:
+-                    raise ValueError(
+-                        f"Unrecognized shock basis: {shock_basis}"
+-                    )
++        shares = _attribution_shares(row)
+ 
+-                if not np.isfinite(electricity_change_gwh):
+-                    raise ValueError(
+-                        "Physical electricity-demand change is non-finite."
+-                    )
++        bases = ["annual_increment", "cumulative_vs_first_year"]
++        if year == 2030:
++            bases.append("2030_additional_output")
+ 
+-                electricity_price = float(row.price_2022_usd_mwh)
++        for shock_basis in bases:
+ 
+-                if (
+-                    not np.isfinite(electricity_price)
+-                    or electricity_price <= 0
+-                ):
+-                    raise ValueError(
+-                        "Electricity price must be positive and finite."
+-                    )
++            dc_output_full, facility_gwh_full = basis_values(row, shock_basis)
+ 
+-                # GWh * USD/MWh / 1,000 = USD million.
+-                electricity_expenditure_usd_mn = (
+-                    electricity_change_gwh
+-                    * electricity_price
+-                    / 1_000.0
++            # Electricity cost share of the data-centre output change; the
++            # same for every attribution lens because both scale together.
++            if abs(dc_output_full) > 1e-12:
++                electricity_cost_share = (
++                    facility_gwh_full * price / 1_000.0 / dc_output_full
+                 )
++            else:
++                electricity_cost_share = np.nan
+ 
+-                if not np.isfinite(electricity_expenditure_usd_mn):
+-                    raise ValueError(
+-                        "Electricity expenditure is non-finite."
+-                    )
++            for attribution, share in shares.items():
+ 
+-                # Skip only if neither the ITC shock nor the physical
+-                # electricity-demand shock is non-zero.
+-                if (
+-                    abs(shock) < 1e-12
+-                    and abs(electricity_expenditure_usd_mn) < 1e-12
+-                ):
++                if pd.isna(share):
+                     continue
+ 
+-                # --------------------------------------------------------
+-                # Define electricity-demand sensitivities.
+-                # --------------------------------------------------------
++                shock = dc_output_full * share
++                facility_gwh = facility_gwh_full * share
+ 
+-                demand_sensitivities = {
+-                    "icio_endogenous": None,
+-                }
++                if abs(shock) < 1e-12:
++                    # No output change: nothing to propagate. (Electricity
++                    # demand is attached to output through the hybrid column,
++                    # so it scales with the attribution share.)
++                    continue
+ 
+-                if country in electricity_index_by_country:
+-                    demand_sensitivities[
+-                        "physical_facility_demand"
+-                    ] = electricity_expenditure_usd_mn
++                dc_shocks = shock * target_dc_weights
+ 
+-                electricity_index = electricity_index_by_country.get(
+-                    country
++                # -------------------- Downstream (Ghosh) --------------------
++                # Supply push at the data-centre industries only.
++                delta_v_down, delta_x_down = gross_output_to_primary_inputs(
++                    ghosh_lu=ghosh_lu,
++                    n=n,
++                    target_indices=target_dc_indices,
++                    target_gross_output_changes=dc_shocks,
+                 )
+ 
+-                # --------------------------------------------------------
+-                # Run each electricity-demand sensitivity.
+-                # --------------------------------------------------------
+-
+-                for (
+-                    electricity_demand_sensitivity,
+-                    physical_electricity_shock,
+-                ) in demand_sensitivities.items():
+-
+-                    # ----------------------------------------------------
+-                    # Construct the common target output shocks.
+-                    #
+-                    # These exact target indices and target output
+-                    # changes are used in BOTH Leontief and Ghosh.
+-                    # ----------------------------------------------------
+-
+-                    dc_shocks = shock * target_dc_weights
+-
+-                    if physical_electricity_shock is None:
+-
+-                        target_indices = list(target_dc_indices)
++                # -------------------- Electricity sensitivities ------------
++                electricity_sensitivities = ["icio_endogenous"]
+ 
+-                        target_shocks = np.asarray(
+-                            dc_shocks,
+-                            dtype=float,
+-                        )
+-
+-                    else:
+-
+-                        target_indices = list(target_dc_indices) + [
+-                            electricity_index,
+-                        ]
+-
+-                        target_shocks = np.concatenate(
+-                            [
+-                                dc_shocks,
+-                                [physical_electricity_shock],
+-                            ]
+-                        ).astype(float)
++                physical_ok = (
++                    np.isfinite(electricity_cost_share)
++                    and 0 <= electricity_cost_share < 1
++                )
+ 
+-                    if len(set(target_indices)) != len(target_indices):
++                if np.isfinite(electricity_cost_share) and not physical_ok:
++                    if electricity_cost_share >= 1:
+                         raise ValueError(
+-                            "The ITC and electricity target industries "
+-                            "must be distinct."
++                            f"{country} {year} {shock_basis}: electricity "
++                            f"expenditure is {100 * electricity_cost_share:.1f}% "
++                            "of data-centre output. Output per MW is too low "
++                            "for the electricity demand supplied."
+                         )
+-
+-                    # ----------------------------------------------------
+-                    # Leontief: calibrate final demand to reproduce the
+-                    # common target gross-output shocks.
+-                    # ----------------------------------------------------
+-
+-                    delta_y, delta_x = gross_output_to_final_demand(
+-                        lu=lu,
+-                        piv=piv,
+-                        n=n,
+-                        target_indices=target_indices,
+-                        delta_x_target=target_shocks,
++                    LOG.warning(
++                        "%s %s %s: negative electricity cost share (%.3f); "
++                        "physical sensitivity skipped.",
++                        country, year, shock_basis, electricity_cost_share,
+                     )
+-
+-                    if (
+-                        not np.isfinite(delta_y).all()
+-                        or not np.isfinite(delta_x).all()
+-                    ):
+-                        raise ValueError(
+-                            "Leontief final-demand or output changes "
+-                            "contain non-finite values."
++                elif physical_ok:
++                    electricity_sensitivities.append("physical_facility_demand")
++                    if electricity_cost_share > 0.5:
++                        LOG.warning(
++                            "%s %s %s: electricity is %.0f%% of data-centre "
++                            "output; other inputs are scaled to %.0f%% of the "
++                            "ICIO column. Check output per MW.",
++                            country, year, shock_basis,
++                            100 * electricity_cost_share,
++                            100 * (1 - electricity_cost_share),
+                         )
+ 
+-                    # ----------------------------------------------------
+-                    # Ghosh: calibrate primary-input shocks to reproduce
+-                    # the EXACT SAME target gross-output shocks.
+-                    # ----------------------------------------------------
+-
+-                    delta_v_downstream, delta_x_downstream = (
+-                        gross_output_to_primary_inputs(
+-                            ghosh_lu=ghosh_lu,
+-                            n=n,
+-                            target_indices=target_indices,
+-                            target_gross_output_changes=target_shocks,
+-                        )
+-                    )
++                old_columns = A_np[:, target_dc_indices]
+ 
+-                    if not np.allclose(
+-                        delta_x_downstream[target_indices],
+-                        delta_x[target_indices],
+-                        rtol=1e-8,
+-                        atol=1e-8,
+-                    ):
+-                        raise RuntimeError(
+-                            "Leontief and Ghosh do not reproduce the "
+-                            "same target gross-output shocks."
+-                        )
++                for electricity_sensitivity in electricity_sensitivities:
++
++                    grid_sensitivities = ["average_grid", "projected_grid"]
+ 
+-                    # ----------------------------------------------------
+-                    # Calculate incremental BTM natural-gas emissions.
+-                    #
+-                    # This adjustment is calculated once and applied
+-                    # only in the btm_natgas emissions sensitivity.
+-                    # ----------------------------------------------------
++                    btm_available = (
++                        electricity_sensitivity == "physical_facility_demand"
++                        and country in btm_countries
++                        and np.isfinite(natgas_factor)
++                        and btm_natgas_share > 0
++                    )
+ 
+-                    additional_btm_emissions_tonnes = 0.0
++                    if btm_available:
++                        grid_sensitivities.append("btm_natgas")
+ 
+-                    if (
+-                        country == "CAN"
+-                        and electricity_demand_sensitivity
+-                        == "physical_facility_demand"
+-                    ):
++                    leontief_cache = {}
+ 
+-                        natgas_factor = float(
+-                            row.kgco2_per_kwh_natgas
+-                        )
++                    for grid_sensitivity in grid_sensitivities:
+ 
+-                        if (
+-                            not np.isfinite(natgas_factor)
+-                            or natgas_factor < 0
+-                        ):
+-                            raise ValueError(
+-                                "Canadian natural-gas emissions factor "
+-                                "must be finite and non-negative."
++                        btm = grid_sensitivity == "btm_natgas"
++                        grid_share = 1.0 - btm_natgas_share if btm else 1.0
++
++                        if electricity_sensitivity == "physical_facility_demand":
++                            new_columns, rescale = hybrid_target_columns(
++                                A_np,
++                                target_dc_indices,
++                                electricity_index,
++                                electricity_cost_share,
++                                grid_share=grid_share,
++                                rescale_other_inputs=rescale_other_inputs,
+                             )
++                        else:
++                            new_columns = old_columns
++                            rescale = np.ones(len(target_dc_indices))
+ 
+-                        # Convert the extension-derived electricity-sector
+-                        # emissions intensity into kg CO2e/kWh.
+-                        #
+-                        # The numerical value is also tonnes CO2e/MWh.
+-                        extension_grid_factor = (
+-                            average_grid_intensity[electricity_index]
+-                            * electricity_price
+-                            / 1_000_000.0
+-                        )
++                        cache_key = (electricity_sensitivity, grid_share)
+ 
+-                        # GWh * 1,000 = MWh.
+-                        additional_btm_emissions_tonnes = (
+-                            electricity_change_gwh
+-                            * 1_000.0
+-                            * BTM_NATGAS_SHARE
+-                            * (
+-                                natgas_factor
+-                                - extension_grid_factor
++                        if cache_key not in leontief_cache:
++                            extra = (
++                                (new_columns - old_columns) @ dc_shocks
++                                if electricity_sensitivity == "physical_facility_demand"
++                                else None
+                             )
+-                        )
+-
+-                        if not np.isfinite(
+-                            additional_btm_emissions_tonnes
+-                        ):
+-                            raise ValueError(
+-                                "Additional BTM emissions are non-finite."
++                            leontief_cache[cache_key] = gross_output_to_final_demand(
++                                lu=lu,
++                                piv=piv,
++                                n=n,
++                                target_indices=target_dc_indices,
++                                delta_x_target=dc_shocks,
++                                extra_demand=extra,
+                             )
+ 
+-                    # ----------------------------------------------------
+-                    # Save the Leontief final-demand shock.
+-                    # ----------------------------------------------------
++                        delta_y, delta_x = leontief_cache[cache_key]
+ 
+-                    final_demand_rows.append(
+-                        pd.DataFrame({
+-                            "year": year,
+-                            "shock_basis": shock_basis,
+-                            "shock_destination": country,
+-                            "attribution": attribution,
+-                            "electricity_demand_sensitivity": (
+-                                electricity_demand_sensitivity
+-                            ),
+-                            "io_key": keys,
+-                            "final_demand_change_usd_mn": delta_y,
+-                        })
+-                    )
+-
+-                    # ----------------------------------------------------
+-                    # Calculate emissions under both grid sensitivities.
+-                    # ----------------------------------------------------
++                        if grid_sensitivity == "btm_natgas" or grid_sensitivity == "projected_grid":
++                            intensity = projected_intensity
++                        else:
++                            intensity = base_intensity
+ 
+-                    emissions_sensitivities = [
+-                        "average_grid",
+-                        "btm_natgas",
+-                    ]
++                        # ---------------- Emissions ----------------------
++                        emissions = delta_x * intensity
+ 
+-                    for grid_sensitivity in emissions_sensitivities:
++                        onsite_btm = 0.0
++                        upstream_gas = 0.0
+ 
+-                        # Both cases use the hybrid average-grid
+-                        # emissions extension as their starting point.
+-                        # The BTM case adds the incremental natural-gas
+-                        # emissions adjustment below.
+-                        intensity_vector = average_grid_intensity
++                        if btm:
++                            # GWh * 1,000 = MWh; kg/kWh = t/MWh.
++                            onsite_btm = (
++                                btm_natgas_share * facility_gwh * 1_000.0 * natgas_factor
++                            )
++                            upstream_gas = (
++                                btm_natgas_share
++                                * facility_gwh
++                                * 1_000.0
++                                * natgas_upstream_kgco2e_per_kwh
++                            )
+ 
+-                        # =================================================
+-                        # UPSTREAM: Leontief emissions.
+-                        # =================================================
++                        btm_vector = np.zeros(n)
++                        btm_vector[target_dc_indices[0]] += onsite_btm
++                        gas_keys = np.flatnonzero(
++                            destination_mask & np.isin(sector_by_key, ["06", "B06"])
++                        )
++                        if upstream_gas:
++                            btm_vector[
++                                gas_keys[0] if len(gas_keys) else target_dc_indices[0]
++                            ] += upstream_gas
+ 
+-                        emissions = delta_x * intensity_vector
++                        emissions_total = emissions + btm_vector
+ 
+-                        direct_btm_adjustment = np.zeros(n)
++                        if not np.isfinite(emissions_total).all():
++                            raise ValueError("Calculated upstream emissions contain non-finite values.")
+ 
+-                        if (
+-                            grid_sensitivity == "btm_natgas"
+-                            and country == "CAN"
+-                            and electricity_demand_sensitivity
+-                            == "physical_facility_demand"
+-                        ):
++                        direct_industry = float(emissions[target_dc_indices].sum())
++                        direct_total = direct_industry + onsite_btm
+ 
+-                            direct_btm_adjustment[electricity_index] = (
+-                                additional_btm_emissions_tonnes
+-                            )
++                        purchased_electricity_output = float(
++                            new_columns[electricity_index, :] @ dc_shocks
++                        )
++                        purchased_electricity_emissions = (
++                            purchased_electricity_output * intensity[electricity_index]
++                        )
+ 
+-                            emissions = (
+-                                emissions + direct_btm_adjustment
+-                            )
++                        upstream_excl_direct = (
++                            float(emissions.sum()) - direct_industry + upstream_gas
++                        )
++                        total_footprint = direct_total + upstream_excl_direct
++
++                        # ---------------- Output and value added ---------
++                        va = va_coefficients.copy()
++                        va[target_dc_indices] = 1.0 - new_columns.sum(axis=0)
++                        value_added_change = va * delta_x
++
++                        # ---------------- Cross-border intermediates -----
++                        # Sales of each industry to all purchasers, with the
++                        # data-centre columns replaced by the hybrid columns.
++                        sales = A_np @ delta_x + (new_columns - old_columns) @ dc_shocks
++                        domestic_sales = np.zeros(n)
++                        for block in country_blocks.values():
++                            domestic_sales[block] = A_np[np.ix_(block, block)] @ delta_x[block]
++                        in_block = np.isin(target_dc_indices, destination_block)
++                        domestic_sales[destination_block] += (
++                            (new_columns - old_columns)[destination_block][:, in_block]
++                            @ dc_shocks[in_block]
++                        )
++                        exports = sales - domestic_sales
+ 
+-                        if not np.isfinite(emissions).all():
+-                            raise ValueError(
+-                                "Calculated upstream emissions contain non-finite values."
+-                            )
++                        exports_to_destination = (
++                            A_np[:, destination_block] @ delta_x[destination_block]
++                            + (new_columns - old_columns) @ dc_shocks
++                        )
++                        exports_to_destination[destination_block] = 0.0
+ 
+-                        origin_df = pd.DataFrame({
++                        common = {
+                             "year": year,
+                             "shock_basis": shock_basis,
+                             "shock_destination": country,
+                             "attribution": attribution,
+-                            "electricity_demand_sensitivity": (
+-                                electricity_demand_sensitivity
+-                            ),
++                            "electricity_demand_sensitivity": electricity_sensitivity,
+                             "grid_emissions_sensitivity": grid_sensitivity,
++                        }
++
++                        # ---------------- Upstream detail ----------------
++                        origin_df = pd.DataFrame({
++                            **common,
+                             "io_key": keys,
+                             "output_change_usd_mn": delta_x,
+-                            "ghg_tonnes_co2e": emissions,
+-                            "emissions_intensity_tonnes_per_usd_mn": (
+-                                intensity_vector
+-                            ),
++                            "value_added_change_usd_mn": value_added_change,
++                            "intermediate_exports_usd_mn": exports,
++                            "intermediate_exports_to_destination_usd_mn": exports_to_destination,
++                            "ghg_tonnes_co2e": emissions_total,
++                            "emissions_intensity_tonnes_per_usd_mn": intensity,
+                             "emissions_source": emissions_source,
+-                            "direct_btm_adjustment_tonnes_co2e": (
+-                                direct_btm_adjustment
+-                            ),
+-                        }).merge(
+-                            sector_map,
+-                            on="io_key",
+-                            how="left",
+-                            validate="one_to_one",
+-                        )
++                            "direct_btm_adjustment_tonnes_co2e": btm_vector,
++                            "is_datacentre_industry": np.isin(np.arange(n), target_dc_indices),
++                        }).merge(sector_map, on="io_key", how="left", validate="one_to_one")
+ 
+                         detail_rows.append(origin_df)
+ 
+-                        total_emissions = float(emissions.sum())
+-
+-                        us_emissions = float(
+-                            emissions[country_by_key == "USA"].sum()
+-                        )
+-
+-                        domestic_emissions = float(
+-                            emissions[country_by_key == country].sum()
+-                        )
+-
+-                        electricity_emissions = float(
+-                            emissions[electricity_mask].sum()
+-                        )
+-
+-                        destination_baseline = float(
+-                            baseline_emissions[
+-                                country_by_key == country
+-                            ].sum()
+-                        )
++                        # One final-demand vector per Leontief solution
++                        # (average and projected grid share the solution).
++                        if grid_sensitivity != "projected_grid":
++                            final_demand_rows.append(pd.DataFrame({
++                                **{
++                                    k: v for k, v in common.items()
++                                    if k != "grid_emissions_sensitivity"
++                                },
++                                "grid_share": grid_share,
++                                "io_key": keys,
++                                "final_demand_change_usd_mn": delta_y,
++                            }))
++
++                        total = float(emissions_total.sum())
++                        domestic = float(emissions_total[destination_mask].sum())
++                        destination_baseline = float(baseline_emissions[destination_mask].sum())
+ 
+                         summary_rows.append({
+-                            "year": year,
+-                            "shock_basis": shock_basis,
+-                            "shock_destination": country,
+-                            "attribution": attribution,
+-                            "electricity_demand_sensitivity": (
+-                                electricity_demand_sensitivity
+-                            ),
+-                            "grid_emissions_sensitivity": grid_sensitivity,
++                            **common,
++                            "shock_basis_note": SHOCK_BASIS_NOTES[shock_basis],
+                             "target_gross_output_change_usd_mn": shock,
++                            "attribution_share": share,
++                            "facility_electricity_gwh": facility_gwh,
+                             "physical_electricity_expenditure_usd_mn": (
+-                                physical_electricity_shock
+-                                if physical_electricity_shock is not None
++                                facility_gwh * price / 1_000.0
++                                if electricity_sensitivity == "physical_facility_demand"
+                                 else np.nan
+                             ),
+-                            "global_upstream_ghg_tonnes_co2e": (
+-                                total_emissions
+-                            ),
+-                            "us_origin_ghg_tonnes_co2e": us_emissions,
+-                            "destination_country_origin_ghg_tonnes_co2e": (
+-                                domestic_emissions
+-                            ),
+-                            "foreign_origin_ghg_tonnes_co2e": (
+-                                total_emissions - domestic_emissions
+-                            ),
+-                            "electricity_sector_origin_ghg_tonnes_co2e": (
+-                                electricity_emissions
+-                            ),
+-                            "us_origin_share": (
+-                                us_emissions / total_emissions
+-                                if abs(total_emissions) > 1e-12
+-                                else np.nan
+-                            ),
+-                            "destination_origin_share": (
+-                                domestic_emissions / total_emissions
+-                                if abs(total_emissions) > 1e-12
+-                                else np.nan
+-                            ),
+-                            "baseline_global_ghg_tonnes_co2e": (
+-                                baseline_total_emissions
+-                            ),
+-                            "baseline_us_origin_ghg_tonnes_co2e": (
+-                                baseline_us_emissions
+-                            ),
+-                            "baseline_destination_country_origin_ghg_tonnes_co2e": (
+-                                destination_baseline
+-                            ),
+-                            "baseline_foreign_origin_ghg_tonnes_co2e": (
+-                                baseline_total_emissions
+-                                - destination_baseline
+-                            ),
+-                            "baseline_electricity_sector_origin_ghg_tonnes_co2e": (
+-                                baseline_electricity_emissions
++                            "electricity_cost_share_of_output": (
++                                electricity_cost_share
++                                if electricity_sensitivity == "physical_facility_demand"
++                                else float(old_columns[electricity_index, :] @ target_dc_weights)
+                             ),
++                            "other_inputs_rescale_factor": float(rescale @ target_dc_weights),
++                            "btm_natgas_share": btm_natgas_share if btm else 0.0,
++                            # Footprint components (direct is NOT in upstream).
++                            "direct_ghg_tonnes_co2e": direct_total,
++                            "direct_datacentre_industry_ghg_tonnes_co2e": direct_industry,
++                            "onsite_btm_generation_ghg_tonnes_co2e": onsite_btm,
++                            "upstream_excl_direct_ghg_tonnes_co2e": upstream_excl_direct,
++                            "purchased_electricity_ghg_tonnes_co2e": purchased_electricity_emissions,
++                            "btm_natgas_upstream_ghg_tonnes_co2e": upstream_gas,
++                            # Total footprint = direct + upstream (kept under
++                            # its historical name).
++                            "global_upstream_ghg_tonnes_co2e": total_footprint,
++                            "us_origin_ghg_tonnes_co2e": float(emissions_total[country_by_key == "USA"].sum()),
++                            "destination_country_origin_ghg_tonnes_co2e": domestic,
++                            "foreign_origin_ghg_tonnes_co2e": total - domestic,
++                            "electricity_sector_origin_ghg_tonnes_co2e": float(emissions_total[electricity_mask].sum()),
++                            # Output gain.
++                            "global_output_change_usd_mn": float(delta_x.sum()),
++                            "destination_output_change_usd_mn": float(delta_x[destination_mask].sum()),
++                            "foreign_output_change_usd_mn": float(delta_x[~destination_mask].sum()),
++                            "global_value_added_change_usd_mn": float(value_added_change.sum()),
++                            "destination_value_added_change_usd_mn": float(value_added_change[destination_mask].sum()),
++                            "cross_border_intermediates_usd_mn": float(exports.sum()),
++                            "intermediate_imports_to_destination_usd_mn": float(exports_to_destination.sum()),
++                            "baseline_global_ghg_tonnes_co2e": baseline_total,
++                            "baseline_us_origin_ghg_tonnes_co2e": baseline_us,
++                            "baseline_destination_country_origin_ghg_tonnes_co2e": destination_baseline,
++                            "baseline_foreign_origin_ghg_tonnes_co2e": baseline_total - destination_baseline,
++                            "baseline_electricity_sector_origin_ghg_tonnes_co2e": baseline_electricity,
+                         })
+ 
+-                        # =================================================
+-                        # DOWNSTREAM: Ghosh emissions.
+-                        # =================================================
+-
+-                        downstream_emissions = (
+-                            delta_x_downstream * intensity_vector
+-                        )
+-
+-                        downstream_direct_btm_adjustment = np.zeros(n)
+-
+-                        if (
+-                            grid_sensitivity == "btm_natgas"
+-                            and country == "CAN"
+-                            and electricity_demand_sensitivity
+-                            == "physical_facility_demand"
+-                        ):
+-
+-                            downstream_direct_btm_adjustment[
+-                                electricity_index
+-                            ] = additional_btm_emissions_tonnes
+-
+-                            downstream_emissions = (
+-                                downstream_emissions
+-                                + downstream_direct_btm_adjustment
+-                            )
+-
+-                        if not np.isfinite(downstream_emissions).all():
+-                            raise ValueError(
+-                                "Calculated downstream emissions contain non-finite values."
+-                            )
+-
+-                        downstream_total_emissions = float(
+-                            downstream_emissions.sum()
+-                        )
+-
+-                        downstream_us_emissions = float(
+-                            downstream_emissions[
+-                                country_by_key == "USA"
+-                            ].sum()
+-                        )
+-
+-                        downstream_domestic_emissions = float(
+-                            downstream_emissions[
+-                                country_by_key == country
+-                            ].sum()
+-                        )
+-
+-                        downstream_electricity_emissions = float(
+-                            downstream_emissions[electricity_mask].sum()
+-                        )
+-
+-                        downstream_destination_baseline = (
+-                            destination_baseline
+-                        )
+-
+-                        downstream_foreign_baseline = (
+-                            baseline_total_emissions
+-                            - downstream_destination_baseline
+-                        )
+-
+-                        # ------------------------------------------------
+-                        # Downstream detail.
+-                        # ------------------------------------------------
+-
+-                        downstream_detail = pd.DataFrame({
++                        # ---------------- Downstream ---------------------
++                        # No electricity target and no on-site generation:
++                        # downstream is the supply push from the data-centre
++                        # industries to their purchasers.
++                        downstream = delta_x_down * intensity
++                        down_direct = float(downstream[target_dc_indices].sum())
++                        down_total = float(downstream.sum())
++                        down_domestic = float(downstream[destination_mask].sum())
++
++                        downstream_detail_rows.append(pd.DataFrame({
++                            **common,
+                             "io_key": keys,
+-                            "output_change_usd_mn": (
+-                                delta_x_downstream
+-                            ),
+-                            "primary_input_change_usd_mn": (
+-                                delta_v_downstream
+-                            ),
+-                            "ghg_tonnes_co2e": downstream_emissions,
+-                            "emissions_intensity_tonnes_per_usd_mn": (
+-                                intensity_vector
+-                            ),
++                            "output_change_usd_mn": delta_x_down,
++                            "primary_input_change_usd_mn": delta_v_down,
++                            "ghg_tonnes_co2e": downstream,
++                            "emissions_intensity_tonnes_per_usd_mn": intensity,
+                             "emissions_source": emissions_source,
+-                            "direct_btm_adjustment_tonnes_co2e": (
+-                                downstream_direct_btm_adjustment
+-                            ),
+-                        }).merge(
+-                            sector_map,
+-                            on="io_key",
+-                            how="left",
+-                            validate="one_to_one",
+-                        )
+-
+-                        downstream_detail["year"] = year
+-                        downstream_detail["shock_basis"] = shock_basis
+-                        downstream_detail["shock_destination"] = country
+-                        downstream_detail["attribution"] = attribution
+-                        downstream_detail[
+-                            "electricity_demand_sensitivity"
+-                        ] = electricity_demand_sensitivity
+-                        downstream_detail[
+-                            "grid_emissions_sensitivity"
+-                        ] = grid_sensitivity
+-
+-                        downstream_detail_rows.append(
+-                            downstream_detail
+-                        )
+-
+-                        # ------------------------------------------------
+-                        # Downstream summary.
+-                        # ------------------------------------------------
++                            "is_datacentre_industry": np.isin(np.arange(n), target_dc_indices),
++                        }).merge(sector_map, on="io_key", how="left", validate="one_to_one"))
+ 
+                         downstream_summary_rows.append({
+-                            "year": year,
+-                            "shock_basis": shock_basis,
+-                            "shock_destination": country,
+-                            "attribution": attribution,
+-                            "electricity_demand_sensitivity": (
+-                                electricity_demand_sensitivity
+-                            ),
+-                            "grid_emissions_sensitivity": grid_sensitivity,
++                            **common,
++                            "shock_basis_note": SHOCK_BASIS_NOTES[shock_basis],
+                             "itc_output_change_usd_mn": shock,
+-                            "physical_electricity_expenditure_usd_mn": (
+-                                physical_electricity_shock
+-                                if physical_electricity_shock is not None
+-                                else np.nan
+-                            ),
+-                            "global_downstream_ghg_tonnes_co2e": (
+-                                downstream_total_emissions
+-                            ),
+-                            "destination_country_origin_ghg_tonnes_co2e": (
+-                                downstream_domestic_emissions
+-                            ),
+-                            "us_origin_ghg_tonnes_co2e": (
+-                                downstream_us_emissions
+-                            ),
+-                            "foreign_origin_ghg_tonnes_co2e": (
+-                                downstream_total_emissions
+-                                - downstream_domestic_emissions
+-                            ),
+-                            "electricity_sector_origin_ghg_tonnes_co2e": (
+-                                downstream_electricity_emissions
+-                            ),
+-                            "btm_natgas_adjustment_tonnes_co2e": (
+-                                float(
+-                                    downstream_direct_btm_adjustment.sum()
+-                                )
+-                            ),
+-                            "baseline_global_ghg_tonnes_co2e": (
+-                                baseline_total_emissions
+-                            ),
+-                            "baseline_us_origin_ghg_tonnes_co2e": (
+-                                baseline_us_emissions
+-                            ),
+-                            "baseline_destination_country_origin_ghg_tonnes_co2e": (
+-                                downstream_destination_baseline
+-                            ),
+-                            "baseline_foreign_origin_ghg_tonnes_co2e": (
+-                                downstream_foreign_baseline
+-                            ),
+-                            "baseline_electricity_sector_origin_ghg_tonnes_co2e": (
+-                                baseline_electricity_emissions
+-                            ),
++                            "attribution_share": share,
++                            "downstream_excl_direct_ghg_tonnes_co2e": down_total - down_direct,
++                            "direct_datacentre_industry_ghg_tonnes_co2e": down_direct,
++                            "global_downstream_ghg_tonnes_co2e": down_total,
++                            "destination_country_origin_ghg_tonnes_co2e": down_domestic,
++                            "us_origin_ghg_tonnes_co2e": float(downstream[country_by_key == "USA"].sum()),
++                            "foreign_origin_ghg_tonnes_co2e": down_total - down_domestic,
++                            "electricity_sector_origin_ghg_tonnes_co2e": float(downstream[electricity_mask].sum()),
++                            "global_output_change_usd_mn": float(delta_x_down.sum()),
++                            "baseline_global_ghg_tonnes_co2e": baseline_total,
++                            "baseline_us_origin_ghg_tonnes_co2e": baseline_us,
++                            "baseline_destination_country_origin_ghg_tonnes_co2e": destination_baseline,
++                            "baseline_foreign_origin_ghg_tonnes_co2e": baseline_total - destination_baseline,
++                            "baseline_electricity_sector_origin_ghg_tonnes_co2e": baseline_electricity,
+                         })
+ 
+-    # ------------------------------------------------------------
+-    # Assemble upstream results.
+-    # ------------------------------------------------------------
+-
+     if not detail_rows:
+         raise ValueError(
+-            "No Leontief results were generated. Check the output "
+-            "scenario and whether the 2030 additional-output shock "
+-            "is non-zero."
++            "No Leontief results were generated. Check the output scenario "
++            "and whether any data-centre output change is non-zero."
+         )
+ 
+-    detail = pd.concat(
+-        detail_rows,
+-        ignore_index=True,
+-    )
+-
+-    summary = pd.DataFrame(summary_rows)
+-
+-    total = summary[
+-        "global_upstream_ghg_tonnes_co2e"
+-    ].replace(0, np.nan)
+-
+-    summary["us_origin_share_pct"] = (
+-        100.0
+-        * summary["us_origin_ghg_tonnes_co2e"]
+-        / total
++    detail = pd.concat(detail_rows, ignore_index=True)
++    summary = _add_summary_ratios(
++        pd.DataFrame(summary_rows),
++        total_column="global_upstream_ghg_tonnes_co2e",
++        extra_columns=[
++            "direct_ghg_tonnes_co2e",
++            "upstream_excl_direct_ghg_tonnes_co2e",
++        ],
+     )
++    final_demand = pd.concat(final_demand_rows, ignore_index=True)
+ 
+-    summary["destination_origin_share_pct"] = (
+-        100.0
+-        * summary["destination_country_origin_ghg_tonnes_co2e"]
+-        / total
++    downstream_detail = pd.concat(downstream_detail_rows, ignore_index=True)
++    downstream_summary = _add_summary_ratios(
++        pd.DataFrame(downstream_summary_rows),
++        total_column="global_downstream_ghg_tonnes_co2e",
++        extra_columns=["downstream_excl_direct_ghg_tonnes_co2e"],
+     )
+ 
+-    summary["foreign_origin_share_pct"] = (
+-        100.0
+-        * summary["foreign_origin_ghg_tonnes_co2e"]
+-        / total
+-    )
++    return detail, summary, final_demand, downstream_detail, downstream_summary
+ 
+-    summary["electricity_sector_origin_share_pct"] = (
+-        100.0
+-        * summary["electricity_sector_origin_ghg_tonnes_co2e"]
+-        / total
+-    )
+ 
+-    # ------------------------------------------------------------
+-    # Upstream: percentage changes relative to average-grid results.
+-    # ------------------------------------------------------------
++def _add_summary_ratios(
++    summary: pd.DataFrame,
++    total_column: str,
++    extra_columns: list[str],
++) -> pd.DataFrame:
++    """Origin shares, % change vs average grid and % of the 2022 baseline."""
++    summary = summary.copy()
++    total = summary[total_column].replace(0, np.nan)
++
++    for name, column in [
++        ("us_origin_share_pct", "us_origin_ghg_tonnes_co2e"),
++        ("destination_origin_share_pct", "destination_country_origin_ghg_tonnes_co2e"),
++        ("foreign_origin_share_pct", "foreign_origin_ghg_tonnes_co2e"),
++        ("electricity_sector_origin_share_pct", "electricity_sector_origin_ghg_tonnes_co2e"),
++    ]:
++        summary[name] = 100.0 * summary[column] / total
+ 
+     emission_columns = [
+-        "global_upstream_ghg_tonnes_co2e",
++        total_column,
++        *extra_columns,
+         "us_origin_ghg_tonnes_co2e",
+         "destination_country_origin_ghg_tonnes_co2e",
+         "foreign_origin_ghg_tonnes_co2e",
+         "electricity_sector_origin_ghg_tonnes_co2e",
+     ]
+ 
+-    comparison_keys = [
++    keys = [
+         "year",
+         "shock_basis",
+         "shock_destination",
+@@ -3085,227 +2922,174 @@ def run_leontief(
+         "electricity_demand_sensitivity",
+     ]
+ 
+-    upstream_average_grid = (
+-        summary.loc[
+-            summary["grid_emissions_sensitivity"] == "average_grid",
+-            comparison_keys + emission_columns,
+-        ]
+-        .set_index(comparison_keys)
++    reference = (
++        summary.loc[summary["grid_emissions_sensitivity"] == "average_grid", keys + emission_columns]
++        .set_index(keys)
+     )
+-
+-    summary_indexed = summary.set_index(comparison_keys)
++    indexed = summary.set_index(keys)
+ 
+     for column in emission_columns:
+-
+-        baseline_values = upstream_average_grid[column].reindex(
+-            summary_indexed.index
+-        )
+-
+-        summary[
+-            f"{column}_pct_change_vs_average_grid"
+-        ] = (
+-            (
+-                summary_indexed[column] / baseline_values
+-                - 1.0
+-            )
+-            * 100.0
+-        ).to_numpy()
+-
+-    # ------------------------------------------------------------
+-    # Upstream: emissions as a percentage of the 2022 IO baseline.
+-    # ------------------------------------------------------------
+-
+-    baseline_comparisons = {
+-        "global_upstream_ghg_tonnes_co2e": (
+-            "baseline_global_ghg_tonnes_co2e"
+-        ),
+-        "us_origin_ghg_tonnes_co2e": (
+-            "baseline_us_origin_ghg_tonnes_co2e"
+-        ),
+-        "destination_country_origin_ghg_tonnes_co2e": (
+-            "baseline_destination_country_origin_ghg_tonnes_co2e"
+-        ),
+-        "foreign_origin_ghg_tonnes_co2e": (
+-            "baseline_foreign_origin_ghg_tonnes_co2e"
+-        ),
+-        "electricity_sector_origin_ghg_tonnes_co2e": (
+-            "baseline_electricity_sector_origin_ghg_tonnes_co2e"
+-        ),
++        base = reference[column].reindex(indexed.index).to_numpy()
++        summary[f"{column}_pct_change_vs_average_grid"] = (
++            (indexed[column].to_numpy() / np.where(base == 0, np.nan, base) - 1.0) * 100.0
++        )
++
++    baseline_map = {
++        total_column: "baseline_global_ghg_tonnes_co2e",
++        **{c: "baseline_global_ghg_tonnes_co2e" for c in extra_columns},
++        "us_origin_ghg_tonnes_co2e": "baseline_us_origin_ghg_tonnes_co2e",
++        "destination_country_origin_ghg_tonnes_co2e": "baseline_destination_country_origin_ghg_tonnes_co2e",
++        "foreign_origin_ghg_tonnes_co2e": "baseline_foreign_origin_ghg_tonnes_co2e",
++        "electricity_sector_origin_ghg_tonnes_co2e": "baseline_electricity_sector_origin_ghg_tonnes_co2e",
+     }
+ 
+-    for emission_column, baseline_column in baseline_comparisons.items():
+-
+-        summary[
+-            f"{emission_column}_pct_change_vs_2022_baseline"
+-        ] = (
+-            100.0
+-            * summary[emission_column]
+-            / summary[baseline_column].replace(0, np.nan)
++    for column, baseline_column in baseline_map.items():
++        summary[f"{column}_pct_change_vs_2022_baseline"] = (
++            100.0 * summary[column] / summary[baseline_column].replace(0, np.nan)
+         )
+ 
+-    final_demand = pd.concat(
+-        final_demand_rows,
+-        ignore_index=True,
+-    )
+-
+-    # ------------------------------------------------------------
+-    # Assemble downstream results.
+-    # ------------------------------------------------------------
+-
+-    if downstream_detail_rows:
+-        downstream_detail = pd.concat(
+-            downstream_detail_rows,
+-            ignore_index=True,
+-        )
+-    else:
+-        downstream_detail = pd.DataFrame()
++    return summary
+ 
+-    if downstream_summary_rows:
+-
+-        downstream_summary = pd.DataFrame(
+-            downstream_summary_rows
+-        )
+-
+-        # --------------------------------------------------------
+-        # Downstream: emissions origin shares.
+-        # --------------------------------------------------------
+-
+-        downstream_total = downstream_summary[
+-            "global_downstream_ghg_tonnes_co2e"
+-        ].replace(0, np.nan)
+-
+-        downstream_summary["us_origin_share_pct"] = (
+-            100.0
+-            * downstream_summary["us_origin_ghg_tonnes_co2e"]
+-            / downstream_total
+-        )
+ 
+-        downstream_summary["destination_origin_share_pct"] = (
+-            100.0
+-            * downstream_summary[
+-                "destination_country_origin_ghg_tonnes_co2e"
+-            ]
+-            / downstream_total
+-        )
+-
+-        downstream_summary["foreign_origin_share_pct"] = (
+-            100.0
+-            * downstream_summary[
+-                "foreign_origin_ghg_tonnes_co2e"
+-            ]
+-            / downstream_total
+-        )
+-
+-        downstream_summary[
+-            "electricity_sector_origin_share_pct"
+-        ] = (
+-            100.0
+-            * downstream_summary[
+-                "electricity_sector_origin_ghg_tonnes_co2e"
+-            ]
+-            / downstream_total
+-        )
+-
+-        # --------------------------------------------------------
+-        # Downstream: percentage changes relative to average-grid
+-        # results, matching the same scenario dimensions.
+-        # --------------------------------------------------------
++# ---------------------------------------------------------------------
++# Optional: embodied emissions of data-centre construction and equipment
++# ---------------------------------------------------------------------
+ 
+-        downstream_emission_columns = [
+-            "global_downstream_ghg_tonnes_co2e",
+-            "us_origin_ghg_tonnes_co2e",
+-            "destination_country_origin_ghg_tonnes_co2e",
+-            "foreign_origin_ghg_tonnes_co2e",
+-            "electricity_sector_origin_ghg_tonnes_co2e",
+-        ]
++CAPEX_FILE = "dc_capex.csv"
++CAPEX_COMPOSITION_FILE = "dc_capex_composition.csv"
++
++
++def write_capex_templates(out_dir: Path) -> list[Path]:
++    """Write empty templates for the optional capital-expenditure module."""
++    out_dir.mkdir(parents=True, exist_ok=True)
++    capex = out_dir / f"{Path(CAPEX_FILE).stem}_TEMPLATE.csv"
++    composition = out_dir / f"{Path(CAPEX_COMPOSITION_FILE).stem}_TEMPLATE.csv"
++    pd.DataFrame(
++        columns=["country", "year", "capex_usd_mn_per_mw_2022", "source"]
++    ).to_csv(capex, index=False)
++    pd.DataFrame(
++        columns=["country", "icio_sector_code", "share", "source"]
++    ).to_csv(composition, index=False)
++    return [capex, composition]
++
++
++def load_capex_inputs(data_dir: Path):
++    """Load dc_capex.csv and dc_capex_composition.csv (both required)."""
++    capex = read_table(data_dir / CAPEX_FILE)
++    require_columns(capex, ["country", "year", "capex_usd_mn_per_mw_2022"], CAPEX_FILE)
++    capex["country"] = capex["country"].astype(str).str.strip().str.upper()
++    capex["year"] = pd.to_numeric(capex["year"], errors="raise").astype(int)
++    capex["capex_usd_mn_per_mw_2022"] = numeric_column(capex, "capex_usd_mn_per_mw_2022", CAPEX_FILE)
++    check_unique(capex, ["country", "year"], CAPEX_FILE)
++
++    composition = read_table(data_dir / CAPEX_COMPOSITION_FILE)
++    require_columns(composition, ["country", "icio_sector_code", "share"], CAPEX_COMPOSITION_FILE)
++    composition["country"] = composition["country"].astype(str).str.strip().str.upper()
++    composition["icio_sector_code"] = composition["icio_sector_code"].astype(str).str.strip()
++    composition["share"] = numeric_column(composition, "share", CAPEX_COMPOSITION_FILE)
++    sums = composition.groupby("country")["share"].sum()
++    if not np.allclose(sums, 1.0, atol=1e-6):
++        raise ValueError(f"{CAPEX_COMPOSITION_FILE}: shares must sum to one per country: {sums.to_dict()}")
++    return capex, composition
++
++
++def run_capex(
++    A: pd.DataFrame,
++    FD: pd.DataFrame,
++    extension: pd.DataFrame,
++    sector_map: pd.DataFrame,
++    scenarios: pd.DataFrame,
++    capex: pd.DataFrame,
++    composition: pd.DataFrame,
++):
++    """
++    Embodied emissions of building and equipping new capacity.
+ 
+-        downstream_comparison_keys = [
+-            "year",
+-            "shock_basis",
+-            "shock_destination",
+-            "attribution",
+-            "electricity_demand_sensitivity",
+-        ]
++    New capacity (MW) x capex per MW gives a gross fixed capital formation
++    shock in the destination country. It is split across ICIO products with
++    dc_capex_composition.csv and across countries of origin with the
++    destination's 2022 GFCF purchases of each product (FD column
++    <COUNTRY>_GFCF). The shock is propagated with the Leontief inverse:
+ 
+-        downstream_average_grid = (
+-            downstream_summary.loc[
+-                downstream_summary["grid_emissions_sensitivity"]
+-                == "average_grid",
+-                downstream_comparison_keys
+-                + downstream_emission_columns,
+-            ]
+-            .set_index(downstream_comparison_keys)
+-        )
++        delta_x = L delta_y_GFCF,   emissions = f' delta_x
+ 
+-        downstream_summary_indexed = downstream_summary.set_index(
+-            downstream_comparison_keys
+-        )
++    These are one-off emissions in the year the capacity is built, not
++    annual operating emissions; they are reported separately.
++    """
++    keys = A.index.tolist()
++    n = len(keys)
++    lu, piv = lu_factor(np.eye(n) - A.to_numpy(dtype=float))
+ 
+-        for column in downstream_emission_columns:
++    intensity = extension.set_index("io_key").loc[keys, "ghg_tonnes_per_usd_mn"].to_numpy(float)
++    lookup = sector_map.set_index("io_key").loc[keys]
++    country_by_key = lookup["country"].to_numpy()
++    sector_by_key = lookup["sector_code"].astype(str).to_numpy()
+ 
+-            baseline_values = downstream_average_grid[column].reindex(
+-                downstream_summary_indexed.index
+-            )
++    capex_lookup = capex.set_index(["country", "year"])["capex_usd_mn_per_mw_2022"]
+ 
+-            downstream_summary[
+-                f"{column}_pct_change_vs_average_grid"
+-            ] = (
+-                (
+-                    downstream_summary_indexed[column]
+-                    / baseline_values
+-                    - 1.0
+-                )
+-                * 100.0
+-            ).to_numpy()
+-
+-        # --------------------------------------------------------
+-        # Downstream: emissions as a percentage of the 2022
+-        # IO baseline.
+-        # --------------------------------------------------------
+-
+-        downstream_baseline_comparisons = {
+-            "global_downstream_ghg_tonnes_co2e": (
+-                "baseline_global_ghg_tonnes_co2e"
+-            ),
+-            "us_origin_ghg_tonnes_co2e": (
+-                "baseline_us_origin_ghg_tonnes_co2e"
+-            ),
+-            "destination_country_origin_ghg_tonnes_co2e": (
+-                "baseline_destination_country_origin_ghg_tonnes_co2e"
+-            ),
+-            "foreign_origin_ghg_tonnes_co2e": (
+-                "baseline_foreign_origin_ghg_tonnes_co2e"
+-            ),
+-            "electricity_sector_origin_ghg_tonnes_co2e": (
+-                "baseline_electricity_sector_origin_ghg_tonnes_co2e"
+-            ),
+-        }
++    rows, detail = [], []
++    scen = scenarios.sort_values(["country", "year"]).copy()
++    scen["new_mw_yoy"] = scen.groupby("country")["dc_capacity_mw"].diff().fillna(0.0)
++    scen["new_mw_cumulative"] = (
++        scen["dc_capacity_mw"] - scen.groupby("country")["dc_capacity_mw"].transform("first")
++    )
+ 
+-        for emission_column, baseline_column in (
+-            downstream_baseline_comparisons.items()
+-        ):
+-
+-            downstream_summary[
+-                f"{emission_column}_pct_change_vs_2022_baseline"
+-            ] = (
+-                100.0
+-                * downstream_summary[emission_column]
+-                / downstream_summary[baseline_column].replace(
+-                    0,
+-                    np.nan,
+-                )
++    for row in scen.itertuples(index=False):
++        country, year = row.country, int(row.year)
++        if (country, year) not in capex_lookup.index:
++            continue
++        gfcf_column = f"{country}_GFCF"
++        if gfcf_column not in FD.columns:
++            raise ValueError(
++                f"FD has no column {gfcf_column}; cannot allocate capex across origins. "
++                f"Available columns include {list(FD.columns[:8])}."
+             )
+-
+-    else:
+-        downstream_summary = pd.DataFrame()
+-
+-    return (
+-        detail,
+-        summary,
+-        final_demand,
+-        downstream_detail,
+-        downstream_summary,
+-    )
++        mix = composition.loc[composition["country"] == country]
++        if mix.empty:
++            raise ValueError(f"{CAPEX_COMPOSITION_FILE} has no rows for {country}.")
++
++        per_mw = float(capex_lookup.loc[(country, year)])
++
++        for basis, new_mw in [("annual_increment", row.new_mw_yoy), ("cumulative_vs_first_year", row.new_mw_cumulative)]:
++            capex_usd_mn = float(new_mw) * per_mw
++            if abs(capex_usd_mn) < 1e-12:
++                continue
++            delta_y = np.zeros(n)
++            for item in mix.itertuples(index=False):
++                product = sector_by_key == item.icio_sector_code
++                if not product.any():
++                    raise ValueError(f"Unknown ICIO sector in capex composition: {item.icio_sector_code}")
++                purchases = FD.loc[np.array(keys)[product], gfcf_column].to_numpy(float).clip(min=0)
++                if purchases.sum() <= 0:
++                    raise ValueError(f"{country} has no 2022 GFCF purchases of sector {item.icio_sector_code}.")
++                delta_y[product] += capex_usd_mn * item.share * purchases / purchases.sum()
++            delta_x = lu_solve((lu, piv), delta_y)
++            emissions = delta_x * intensity
++            domestic = country_by_key == country
++            rows.append({
++                "year": year,
++                "shock_basis": basis,
++                "shock_destination": country,
++                "new_capacity_mw": float(new_mw),
++                "capex_usd_mn_per_mw_2022": per_mw,
++                "capex_usd_mn": capex_usd_mn,
++                "capex_imports_usd_mn": float(delta_y[~domestic].sum()),
++                "global_output_change_usd_mn": float(delta_x.sum()),
++                "embodied_capex_ghg_tonnes_co2e": float(emissions.sum()),
++                "destination_country_origin_ghg_tonnes_co2e": float(emissions[domestic].sum()),
++                "foreign_origin_ghg_tonnes_co2e": float(emissions[~domestic].sum()),
++            })
++            detail.append(pd.DataFrame({
++                "year": year,
++                "shock_basis": basis,
++                "shock_destination": country,
++                "io_key": keys,
++                "gfcf_change_usd_mn": delta_y,
++                "output_change_usd_mn": delta_x,
++                "ghg_tonnes_co2e": emissions,
++            }))
++
++    return pd.DataFrame(rows), (pd.concat(detail, ignore_index=True) if detail else pd.DataFrame())
+ 
+ # ---------------------------------------------------------------------
+ # Main
+@@ -3359,6 +3143,68 @@ def parse_args():
+ 
+     parser.add_argument("--log-level", default="INFO")
+ 
++    # --------------------------------------------------------------
++    # Electricity, behind-the-meter gas and emissions options
++    # --------------------------------------------------------------
++    elec = parser.add_argument_group("Electricity and emissions")
++    elec.add_argument(
++        "--btm-natgas-share",
++        type=float,
++        default=0.92,
++        help="Share of facility electricity generated behind the meter from "
++             "natural gas in the btm_natgas sensitivity. The default 0.92 is "
++             "the share of planned Canadian capacity located in Alberta; it is "
++             "an upper bound, not an observed BTM share. Source it or vary it.",
++    )
++    elec.add_argument(
++        "--btm-countries",
++        nargs="+",
++        default=["CAN"],
++        help="Countries for which the btm_natgas sensitivity is calculated.",
++    )
++    elec.add_argument(
++        "--natgas-upstream-kgco2e-per-kwh",
++        type=float,
++        default=0.0,
++        help="Upstream (extraction, processing, transport, methane leakage) "
++             "emissions of gas-fired generation, kg CO2e per kWh generated. "
++             "Default 0 (combustion only).",
++    )
++    elec.add_argument(
++        "--no-rescale-other-inputs",
++        action="store_true",
++        help="Do not scale the other data-centre inputs down when the "
++             "electricity coefficient is replaced by the physical cost share.",
++    )
++    elec.add_argument(
++        "--emissions-extension-year",
++        type=int,
++        default=2022,
++        help="Reference year of the hybrid emissions extension. A warning is "
++             "logged when it differs from --icio-year.",
++    )
++    elec.add_argument(
++        "--capex",
++        action="store_true",
++        help="Also estimate embodied emissions of construction and equipment "
++             "from dc_capex.csv and dc_capex_composition.csv in --data-dir.",
++    )
++    ew = parser.add_argument_group("Server e-waste (ewaste.py)")
++    ew.add_argument("--racks-per-mw", type=float, default=ewaste.RACKS_PER_MW,
++                    help="AI racks per MW of IT capacity (GB300 NVL72: 7.6).")
++    ew.add_argument("--servers-per-rack", type=float, default=ewaste.SERVERS_PER_RACK,
++                    help="Servers (compute trays) per rack (GB300 NVL72: 18).")
++    ew.add_argument("--server-kg", type=float, default=ewaste.SERVER_KG,
++                    help="Mass per server in kg (default 130).")
++    ew.add_argument("--server-lifetime-years", type=float, default=None,
++                    help="If given, also report the steady-state annual e-waste flow "
++                         "(installed server mass / lifetime).")
++    elec.add_argument(
++        "--no-headline-summary",
++        action="store_true",
++        help="Skip the headline summary (summarize_results.py).",
++    )
++
+     # --------------------------------------------------------------
+     # Canadian DSUT split of CAN_J62_63
+     # --------------------------------------------------------------
+@@ -3522,6 +3368,17 @@ def main():
+     LOG.info("Starting data-centre footprint model.")
+     LOG.info("ICIO reference year: %s", args.icio_year)
+ 
++    if args.emissions_extension_year != args.icio_year:
++        LOG.warning(
++            "The emissions extension refers to %s but the ICIO table to %s. "
++            "Intensities are extension emissions divided by ICIO output, so "
++            "they mix years. Rebuild the extension for %s or treat results "
++            "as indicative.",
++            args.emissions_extension_year,
++            args.icio_year,
++            args.icio_year,
++        )
++
+     # 1. Load ICIO.
+     A, X, FD = load_icio(args)
+ 
+@@ -3615,6 +3472,17 @@ def main():
+         index=False,
+     )
+ 
++    # End-of-life server e-waste from installed IT capacity.
++    ewaste_table = ewaste.ewaste_metrics(
++        output,
++        racks_per_mw=args.racks_per_mw,
++        servers_per_rack=args.servers_per_rack,
++        server_kg=args.server_kg,
++        server_lifetime_years=args.server_lifetime_years,
++        coefficients=ewaste.load_coefficients(args.data_dir),
++    )
++    ewaste_table.to_csv(args.output_dir / "ewaste_metrics.csv", index=False)
++
+     scenarios.to_csv(
+         args.output_dir / "dc_output_and_electricity_calibration.csv",
+         index=False,
+@@ -3673,6 +3541,10 @@ def main():
+         extension=extension,
+         dc_map=dc_map,
+         scenarios=scenarios,
++        btm_natgas_share=args.btm_natgas_share,
++        btm_countries=args.btm_countries,
++        natgas_upstream_kgco2e_per_kwh=args.natgas_upstream_kgco2e_per_kwh,
++        rescale_other_inputs=not args.no_rescale_other_inputs,
+     )
+ 
+     detail.to_parquet(
+@@ -3718,10 +3590,18 @@ def main():
+                 "country",
+                 "sector_code",
+                 "sector_label",
++                "is_datacentre_industry",
+             ],
+             as_index=False,
+         )[
+-            ["output_change_usd_mn", "ghg_tonnes_co2e"]
++            [
++                "output_change_usd_mn",
++                "value_added_change_usd_mn",
++                "intermediate_exports_usd_mn",
++                "intermediate_exports_to_destination_usd_mn",
++                "ghg_tonnes_co2e",
++                "direct_btm_adjustment_tonnes_co2e",
++            ]
+         ].sum()
+     )
+ 
+@@ -3730,6 +3610,54 @@ def main():
+         index=False,
+     )
+ 
++    # ------------------------------------------------------------
++    # Optional: embodied emissions of construction and equipment.
++    # ------------------------------------------------------------
++    if args.capex:
++        missing = [
++            f for f in (CAPEX_FILE, CAPEX_COMPOSITION_FILE)
++            if not (args.data_dir / f).exists()
++        ]
++        if missing:
++            templates = write_capex_templates(args.output_dir)
++            raise FileNotFoundError(
++                f"--capex needs {missing} in {args.data_dir}. Templates were "
++                f"written to {[str(t) for t in templates]}."
++            )
++        capex, composition = load_capex_inputs(args.data_dir)
++        capex_summary, capex_detail = run_capex(
++            A=A,
++            FD=FD,
++            extension=extension,
++            sector_map=sector_map,
++            scenarios=scenarios,
++            capex=capex,
++            composition=composition,
++        )
++        capex_summary.to_csv(
++            args.output_dir / "capex_embodied_emissions_summary.csv",
++            index=False,
++        )
++        if not capex_detail.empty:
++            capex_detail.merge(sector_map, on="io_key", how="left").groupby(
++                ["year", "shock_basis", "shock_destination", "country", "sector_code"],
++                as_index=False,
++            )[["gfcf_change_usd_mn", "output_change_usd_mn", "ghg_tonnes_co2e"]].sum().to_csv(
++                args.output_dir / "capex_embodied_emissions_by_origin_country_sector.csv",
++                index=False,
++            )
++
++    # ------------------------------------------------------------
++    # Headline "summary of a summary".
++    # ------------------------------------------------------------
++    if not args.no_headline_summary:
++        import summarize_results
++
++        summarize_results.write_headline(
++            output_dir=args.output_dir,
++            physical=physical,
++        )
++
+     LOG.info("Model completed successfully.")
+     LOG.info("Results written to %s", args.output_dir.resolve())
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 68805ca..98a7a28 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -61,6 +61,8 @@ py-modules = [
+     "dc_origin_override",
+     "build_aea_crosswalk",
+     "build_aea_emission_weights",
++    "summarize_results",
++    "ewaste",
+ ]
+ 
+ [tool.setuptools.packages.find]
+diff --git a/run.bat b/run.bat
+index 5cc5048..11d83c3 100644
+--- a/run.bat
++++ b/run.bat
+@@ -37,11 +37,19 @@ REM TiVA and GHG footprint indicators on the (split) ICIO.
+ set "indicators=--tiva-ghg-indicators"
+ @REM set "indicators=--tiva-ghg-indicators --indicators-only"
+ 
++REM Electricity / behind-the-meter gas options (see docs\methodology.md).
++REM 0.92 is the Alberta share of planned capacity: an upper bound for BTM.
++set "elec_opts=--btm-natgas-share 0.92 --natgas-upstream-kgco2e-per-kwh 0.0"
++REM Optional embodied capex (needs dc_capex.csv and dc_capex_composition.csv):
++@REM set "capex=--capex"
++REM Server e-waste: defaults are GB300 NVL72 (7.6 racks/MW, 18 servers/rack, 130 kg).
++@REM set "ewaste_opts=--server-lifetime-years 5"
++
+ REM Run model
+ echo.
+ echo Running the data-centre ICIO model...
+ 
+-python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %cloud_share% %indicators% %check_only%
++python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %cloud_share% %indicators% %elec_opts% %capex% %ewaste_opts% %check_only%
+ 
+ if errorlevel 1 (
+     echo.
+diff --git a/summarize_results.py b/summarize_results.py
+new file mode 100644
+index 0000000..264ab35
+--- /dev/null
++++ b/summarize_results.py
+@@ -0,0 +1,654 @@
++#!/usr/bin/env python3
++"""
++Headline "summary of a summary" of the data-centre ICIO model results.
++
++For each destination country (one row per country) it reports, for one
++headline scenario:
++
++* output gain: the data-centre output change, global / domestic / foreign
++  gross output, and value added (new outputs only);
++* emissions in three NON-OVERLAPPING components
++      direct      data-centre industries' own emissions + on-site
++                  behind-the-meter (BTM) gas generation
++      upstream    supply-chain emissions excluding direct (incl. purchased
++                  grid electricity)
++      downstream  income-based (Ghosh) emissions excluding direct, from the
++                  supply push of the data-centre industries only
++  plus each as a share of 2022 global production emissions;
++* the BTM gas comparison (gross on-site emissions and the increase over
++  the same electricity drawn from the projected grid);
++* operational cooling water;
++* end-of-life server e-waste (ewaste.py): installed server mass in the
++  headline year, the part from capacity added since the first year, and
++  an annual flow if a server lifetime was given;
++* the top five foreign supplier countries: value of goods and services
++  produced there for the expansion, cross-border intermediates (new
++  outputs only), the emissions emitted there, and the products most
++  required.
++
++It also writes abstract-ready sentences (headline_summary.md).
++
++Headline scenario (all overridable): last scenario year,
++cumulative_vs_first_year, all_expansion, physical_facility_demand, and
++btm_natgas where available, else projected_grid, else average_grid.
++
++Legacy outputs
++--------------
++Outputs written before the methodology fixes (no direct/upstream split
++columns) are still summarised:
++* direct      = emissions of the data-centre proxy industry (from the
++                by-origin file) + 0.92 x GWh x gas factor (BTM rows);
++* upstream    = total - direct;
++* downstream  = the icio_endogenous Ghosh run (which has no electricity
++                target) minus the data-centre industry's own emissions.
++Purchased-electricity emissions, value added and cross-border
++intermediates are not available for legacy outputs.
++
++Usage
++-----
++    python summarize_results.py --output-dir datacentre_results
++    python summarize_results.py --output-dir out --physical physical_operational_metrics.csv
++"""
++from __future__ import annotations
++
++import argparse
++import logging
++import re
++from pathlib import Path
++from typing import Optional
++
++import numpy as np
++import pandas as pd
++
++import ewaste as ew
++
++LOG = logging.getLogger("datacentre_icio.summary")
++
++UPSTREAM_SUMMARY = "upstream_emissions_summary.csv"
++DOWNSTREAM_SUMMARY = "downstream_emissions_summary.csv"
++BY_ORIGIN = "upstream_emissions_by_origin_country_sector.csv"
++PHYSICAL = "physical_operational_metrics.csv"
++CAPEX_SUMMARY = "capex_embodied_emissions_summary.csv"
++EWASTE = "ewaste_metrics.csv"
++CALIBRATION = "dc_output_and_electricity_calibration.csv"
++
++LEGACY_BTM_SHARE = 0.92
++
++# Data-centre proxy sectors when the by-origin file has no
++# is_datacentre_industry flag: J62_63 / 62T63, or its CLD and DPH split.
++DC_SECTOR_PATTERN = re.compile(r"^(J)?62(T|_)63(_CLD|_DPH)?$")
++
++COUNTRY_NAMES = {
++    "USA": "United States", "CHN": "China", "CN1": "China", "CN2": "China",
++    "MEX": "Mexico", "MX1": "Mexico", "MX2": "Mexico", "CAN": "Canada",
++    "IND": "India", "DEU": "Germany", "GBR": "United Kingdom", "FRA": "France",
++    "AUS": "Australia", "JPN": "Japan", "KOR": "Korea", "TWN": "Chinese Taipei",
++    "RUS": "Russia", "SAU": "Saudi Arabia", "ARE": "United Arab Emirates",
++    "IDN": "Indonesia", "MYS": "Malaysia", "SGP": "Singapore", "THA": "Thailand",
++    "VNM": "Viet Nam", "PHL": "Philippines", "BRA": "Brazil", "ITA": "Italy",
++    "ESP": "Spain", "NLD": "Netherlands", "IRL": "Ireland", "CHE": "Switzerland",
++    "NOR": "Norway", "SWE": "Sweden", "POL": "Poland", "TUR": "Türkiye",
++    "ZAF": "South Africa", "KAZ": "Kazakhstan", "ROW": "Rest of the world",
++    "NGA": "Nigeria", "EGY": "Egypt", "PAK": "Pakistan", "BGD": "Bangladesh",
++    "CHL": "Chile", "ARG": "Argentina", "COL": "Colombia", "PER": "Peru",
++    "ISR": "Israel", "BEL": "Belgium", "AUT": "Austria", "DNK": "Denmark",
++    "FIN": "Finland", "CZE": "Czechia", "HUN": "Hungary", "ROU": "Romania",
++    "UKR": "Ukraine", "NZL": "New Zealand", "HKG": "Hong Kong, China",
++}
++
++# Group the split ICIO blocks (processing / non-processing trade).
++COUNTRY_GROUPS = {"CN1": "CHN", "CN2": "CHN", "MX1": "MEX", "MX2": "MEX"}
++
++SECTOR_NAMES = {
++    "01": "agriculture", "02": "forestry", "03": "fishing",
++    "05": "coal mining", "06": "oil and gas extraction",
++    "07": "metal ore mining", "08": "other mining and quarrying",
++    "09": "mining support services", "10T12": "food products",
++    "13T15": "textiles", "16": "wood products", "17T18": "paper and printing",
++    "19": "refined petroleum", "20": "chemicals", "21": "pharmaceuticals",
++    "22": "rubber and plastics", "23": "non-metallic minerals (cement, glass)",
++    "24A": "iron and steel", "24B": "non-ferrous metals",
++    "25": "fabricated metals", "26": "computers and electronics",
++    "27": "electrical equipment", "28": "machinery", "29": "motor vehicles",
++    "301": "ships", "302T309": "other transport equipment",
++    "31T33": "other manufacturing and repair",
++    "35": "electricity and gas supply", "36T39": "water and waste",
++    "41T43": "construction", "45T47": "wholesale and retail trade",
++    "49": "land transport", "50": "water transport", "51": "air transport",
++    "52": "warehousing", "53": "postal services",
++    "55T56": "accommodation and food", "58T60": "publishing and broadcasting",
++    "61": "telecommunications", "62T63": "IT and information services",
++    "64T66": "finance and insurance", "68": "real estate",
++    "69T75": "professional and technical services",
++    "77T82": "administrative services", "84": "public administration",
++    "85": "education", "86T88": "health", "90T93": "arts and recreation",
++    "94T96": "other services", "97T98": "household employers",
++}
++
++
++def country_name(code: str) -> str:
++    return COUNTRY_NAMES.get(code, code)
++
++
++def sector_name(code: str) -> str:
++    code = str(code)
++    base = code.split("_")[0] if code not in SECTOR_NAMES else code
++    return SECTOR_NAMES.get(code, SECTOR_NAMES.get(base, code))
++
++
++# ---------------------------------------------------------------------
++# Scenario selection
++# ---------------------------------------------------------------------
++
++def _select(df: pd.DataFrame, **filters) -> pd.DataFrame:
++    mask = pd.Series(True, index=df.index)
++    for column, value in filters.items():
++        if value is None or column not in df.columns:
++            continue
++        mask &= df[column].astype(str).eq(str(value))
++    return df.loc[mask]
++
++
++def headline_keys(
++    upstream: pd.DataFrame,
++    country: str,
++    year: Optional[int],
++    shock_basis: str,
++    attribution: str,
++    electricity: str,
++    grid: Optional[str],
++) -> Optional[dict]:
++    rows = _select(upstream, shock_destination=country)
++    if rows.empty:
++        return None
++    year = int(year if year is not None else rows["year"].max())
++    rows = _select(
++        rows,
++        year=year,
++        shock_basis=shock_basis,
++        attribution=attribution,
++        electricity_demand_sensitivity=electricity,
++    )
++    if rows.empty:
++        return None
++    if grid is None:
++        available = set(rows["grid_emissions_sensitivity"])
++        legacy = "upstream_excl_direct_ghg_tonnes_co2e" not in rows.columns
++        # In legacy outputs btm_natgas equals average_grid for countries
++        # without a BTM adjustment.
++        if "btm_natgas" in available and (
++            not legacy or _legacy_has_btm(rows)
++        ):
++            grid = "btm_natgas"
++        elif "projected_grid" in available:
++            grid = "projected_grid"
++        else:
++            grid = "average_grid"
++    return {
++        "year": year,
++        "shock_basis": shock_basis,
++        "shock_destination": country,
++        "attribution": attribution,
++        "electricity_demand_sensitivity": electricity,
++        "grid_emissions_sensitivity": grid,
++    }
++
++
++def _legacy_has_btm(rows: pd.DataFrame) -> bool:
++    btm = rows.loc[rows["grid_emissions_sensitivity"] == "btm_natgas", "global_upstream_ghg_tonnes_co2e"]
++    avg = rows.loc[rows["grid_emissions_sensitivity"] == "average_grid", "global_upstream_ghg_tonnes_co2e"]
++    return len(btm) and len(avg) and not np.isclose(btm.iloc[0], avg.iloc[0])
++
++
++# ---------------------------------------------------------------------
++# Loading
++# ---------------------------------------------------------------------
++
++def load_by_origin(path: Path, keys_list: list[dict]) -> pd.DataFrame:
++    """Read only the headline rows of the (large) by-origin file."""
++    wanted = {
++        (str(k["year"]), k["shock_basis"], k["shock_destination"], k["attribution"],
++         k["electricity_demand_sensitivity"], k["grid_emissions_sensitivity"])
++        for k in keys_list
++    }
++    # The average-grid row of each headline is also needed (legacy direct).
++    wanted |= {(w[0], w[1], w[2], w[3], w[4], "average_grid") for w in wanted}
++    wanted |= {(w[0], w[1], w[2], w[3], "icio_endogenous", "average_grid") for w in wanted}
++
++    parts = []
++    for chunk in pd.read_csv(path, chunksize=250_000, dtype={"sector_code": str, "sector_label": str}):
++        key = list(zip(
++            chunk["year"].astype(str), chunk["shock_basis"], chunk["shock_destination"],
++            chunk["attribution"], chunk["electricity_demand_sensitivity"],
++            chunk["grid_emissions_sensitivity"],
++        ))
++        mask = np.fromiter((k in wanted for k in key), dtype=bool, count=len(key))
++        if mask.any():
++            parts.append(chunk.loc[mask])
++    if not parts:
++        return pd.DataFrame()
++    return pd.concat(parts, ignore_index=True)
++
++
++def _dc_mask(df: pd.DataFrame, destination: str) -> pd.Series:
++    if "is_datacentre_industry" in df.columns:
++        return df["is_datacentre_industry"].astype(str).str.lower().isin(["true", "1"])
++    return df["country"].eq(destination) & df["sector_code"].astype(str).str.match(DC_SECTOR_PATTERN)
++
++
++def _physical_for(physical: Optional[pd.DataFrame], country: str, year: int, basis: str) -> dict:
++    """Facility GWh, water and grid factors for the headline basis."""
++    if physical is None:
++        return {}
++    p = physical.loc[physical["country"] == country].sort_values("year")
++    if p.empty or year not in set(p["year"]):
++        return {}
++    last = p.loc[p["year"] == year].iloc[0]
++    first = p.iloc[0]
++    if basis == "cumulative_vs_first_year":
++        gwh = last["facility_electricity_gwh"] - first["facility_electricity_gwh"]
++        water_change = last["operational_water_ml"] - first["operational_water_ml"]
++    elif basis == "annual_increment":
++        prev = p.loc[p["year"] == year - 1]
++        prev = prev.iloc[0] if len(prev) else last
++        gwh = last["facility_electricity_gwh"] - prev["facility_electricity_gwh"]
++        water_change = last["operational_water_ml"] - prev["operational_water_ml"]
++    else:
++        gwh = last["facility_electricity_gwh"]
++        water_change = last["operational_water_ml"]
++    return {
++        "first_year": int(first["year"]),
++        "facility_gwh_basis": float(gwh),
++        "facility_gwh_level": float(last["facility_electricity_gwh"]),
++        "grid_kgco2_per_kwh": float(last["kgco2_per_kwh"]),
++        "natgas_kgco2_per_kwh": float(last["kgco2_per_kwh_natgas"]) if pd.notna(last.get("kgco2_per_kwh_natgas")) else np.nan,
++        "operational_water_ml_level": float(last["operational_water_ml"]),
++        "operational_water_ml_change": float(water_change),
++        "direct_grid_emissions_ktco2_level": float(last["direct_grid_emissions_ktco2"]),
++    }
++
++
++def load_ewaste(output_dir: Path) -> Optional[pd.DataFrame]:
++    """ewaste_metrics.csv, or rebuilt from capacity with default coefficients."""
++    path = output_dir / EWASTE
++    if path.exists():
++        return pd.read_csv(path)
++    calibration = output_dir / CALIBRATION
++    if calibration.exists():
++        LOG.info("%s not found: e-waste rebuilt from %s with default coefficients.", EWASTE, CALIBRATION)
++        return ew.ewaste_metrics(pd.read_csv(calibration))
++    return None
++
++
++def _ewaste_for(table: Optional[pd.DataFrame], country: str, year: int, basis: str) -> dict:
++    empty = {k: np.nan for k in (
++        "dc_capacity_mw", "servers", "ewaste_stock_tonnes",
++        "ewaste_new_capacity_tonnes", "ewaste_annual_tonnes", "ewaste_tonnes_per_mw",
++    )}
++    if table is None:
++        return empty
++    t = table.loc[table["country"] == country].sort_values("year")
++    row = t.loc[t["year"] == year]
++    if row.empty:
++        return empty
++    row = row.iloc[0]
++    if basis == "annual_increment":
++        prev = t.loc[t["year"] == year - 1, "ewaste_stock_tonnes"]
++        new = row["ewaste_stock_tonnes"] - (prev.iloc[0] if len(prev) else 0.0)
++    elif basis == "cumulative_vs_first_year":
++        new = row["ewaste_new_capacity_tonnes"]
++    else:
++        new = row["ewaste_stock_tonnes"]
++    return {
++        "dc_capacity_mw": float(row["dc_capacity_mw"]),
++        "servers": float(row["servers"]),
++        "ewaste_stock_tonnes": float(row["ewaste_stock_tonnes"]),
++        "ewaste_new_capacity_tonnes": float(new),
++        "ewaste_annual_tonnes": float(row["ewaste_annual_tonnes"]),
++        "ewaste_tonnes_per_mw": float(row["tonnes_per_mw"]),
++    }
++
++
++# ---------------------------------------------------------------------
++# Headline calculation
++# ---------------------------------------------------------------------
++
++def summarise(
++    output_dir: Path,
++    physical: Optional[pd.DataFrame] = None,
++    year: Optional[int] = None,
++    shock_basis: str = "cumulative_vs_first_year",
++    attribution: str = "all_expansion",
++    electricity: str = "physical_facility_demand",
++    grid: Optional[str] = None,
++    top_n: int = 5,
++    by_origin_file: Optional[Path] = None,
++    upstream_file: Optional[Path] = None,
++    downstream_file: Optional[Path] = None,
++):
++    output_dir = Path(output_dir)
++    upstream = pd.read_csv(upstream_file or output_dir / UPSTREAM_SUMMARY)
++    downstream = pd.read_csv(downstream_file or output_dir / DOWNSTREAM_SUMMARY)
++
++    if physical is None and (output_dir / PHYSICAL).exists():
++        physical = pd.read_csv(output_dir / PHYSICAL)
++
++    ewaste_table = load_ewaste(output_dir)
++
++    legacy = "upstream_excl_direct_ghg_tonnes_co2e" not in upstream.columns
++    if legacy:
++        LOG.warning("Legacy outputs detected: using the legacy decomposition (see module docstring).")
++
++    countries = list(pd.unique(upstream["shock_destination"]))
++    keys_list = []
++    for country in countries:
++        keys = headline_keys(upstream, country, year, shock_basis, attribution, electricity, grid)
++        if keys is None:
++            LOG.warning("No headline scenario for %s.", country)
++            continue
++        keys_list.append(keys)
++
++    by_origin = load_by_origin(by_origin_file or output_dir / BY_ORIGIN, keys_list)
++
++    headline_rows, origin_rows = [], []
++
++    for keys in keys_list:
++        country = keys["shock_destination"]
++        up = _select(upstream, **keys).iloc[0]
++        phys = _physical_for(physical, country, keys["year"], keys["shock_basis"])
++        origin = _select(by_origin, **keys)
++        avg_keys = {**keys, "grid_emissions_sensitivity": "average_grid"}
++        origin_avg = _select(by_origin, **avg_keys)
++
++        baseline = float(up["baseline_global_ghg_tonnes_co2e"])
++        destination_baseline = float(up["baseline_destination_country_origin_ghg_tonnes_co2e"])
++        total = float(up["global_upstream_ghg_tonnes_co2e"])
++        btm = keys["grid_emissions_sensitivity"] == "btm_natgas"
++
++        if legacy:
++            dc_industry = float(origin_avg.loc[_dc_mask(origin_avg, country), "ghg_tonnes_co2e"].sum())
++            onsite = (
++                LEGACY_BTM_SHARE * phys.get("facility_gwh_basis", np.nan) * 1_000.0
++                * phys.get("natgas_kgco2_per_kwh", np.nan)
++                if btm else 0.0
++            )
++            direct = dc_industry + onsite
++            upstream_excl = total - direct
++            purchased = np.nan
++            btm_share = LEGACY_BTM_SHARE if btm else 0.0
++            down_keys = {**keys, "electricity_demand_sensitivity": "icio_endogenous", "grid_emissions_sensitivity": "average_grid"}
++            down = _select(downstream, **down_keys).iloc[0]
++            downstream_excl = float(down["global_downstream_ghg_tonnes_co2e"]) - dc_industry
++            value_added = np.nan
++            dest_value_added = np.nan
++            cross_border = np.nan
++            imports_to_destination = np.nan
++            output_global = float(origin["output_change_usd_mn"].sum())
++            output_destination = float(origin.loc[origin["country"] == country, "output_change_usd_mn"].sum())
++        else:
++            direct = float(up["direct_ghg_tonnes_co2e"])
++            dc_industry = float(up["direct_datacentre_industry_ghg_tonnes_co2e"])
++            onsite = float(up["onsite_btm_generation_ghg_tonnes_co2e"])
++            upstream_excl = float(up["upstream_excl_direct_ghg_tonnes_co2e"])
++            purchased = float(up["purchased_electricity_ghg_tonnes_co2e"])
++            btm_share = float(up["btm_natgas_share"])
++            down = _select(downstream, **keys).iloc[0]
++            downstream_excl = float(down["downstream_excl_direct_ghg_tonnes_co2e"])
++            value_added = float(up["global_value_added_change_usd_mn"])
++            dest_value_added = float(up["destination_value_added_change_usd_mn"])
++            cross_border = float(up["cross_border_intermediates_usd_mn"])
++            imports_to_destination = float(up["intermediate_imports_to_destination_usd_mn"])
++            output_global = float(up["global_output_change_usd_mn"])
++            output_destination = float(up["destination_output_change_usd_mn"])
++
++        grid_factor = phys.get("grid_kgco2_per_kwh", np.nan)
++        gwh = phys.get("facility_gwh_basis", np.nan)
++        onsite_vs_grid = (
++            onsite - btm_share * gwh * 1_000.0 * grid_factor if btm else np.nan
++        )
++
++        headline_rows.append({
++            **keys,
++            "first_year": phys.get("first_year", np.nan),
++            "legacy_outputs": legacy,
++            "dc_output_change_usd_mn": float(up["target_gross_output_change_usd_mn"]),
++            "global_output_change_usd_mn": output_global,
++            "destination_output_change_usd_mn": output_destination,
++            "foreign_output_change_usd_mn": output_global - output_destination,
++            "global_value_added_change_usd_mn": value_added,
++            "destination_value_added_change_usd_mn": dest_value_added,
++            "cross_border_intermediates_usd_mn": cross_border,
++            "intermediate_imports_to_destination_usd_mn": imports_to_destination,
++            "direct_ghg_tonnes_co2e": direct,
++            "direct_datacentre_industry_ghg_tonnes_co2e": dc_industry,
++            "onsite_btm_generation_ghg_tonnes_co2e": onsite,
++            "btm_increase_vs_projected_grid_tonnes_co2e": onsite_vs_grid,
++            "upstream_excl_direct_ghg_tonnes_co2e": upstream_excl,
++            "purchased_electricity_ghg_tonnes_co2e": purchased,
++            "downstream_excl_direct_ghg_tonnes_co2e": downstream_excl,
++            "total_footprint_ghg_tonnes_co2e": direct + upstream_excl,
++            "direct_pct_of_global_2022": 100 * direct / baseline,
++            "upstream_pct_of_global_2022": 100 * upstream_excl / baseline,
++            "downstream_pct_of_global_2022": 100 * downstream_excl / baseline,
++            "total_pct_of_destination_2022": 100 * (direct + upstream_excl) / destination_baseline,
++            "foreign_origin_ghg_tonnes_co2e": float(up["foreign_origin_ghg_tonnes_co2e"]),
++            "facility_gwh_basis": gwh,
++            "grid_kgco2_per_kwh": grid_factor,
++            "natgas_kgco2_per_kwh": phys.get("natgas_kgco2_per_kwh", np.nan),
++            "operational_water_ml_level": phys.get("operational_water_ml_level", np.nan),
++            "operational_water_ml_change": phys.get("operational_water_ml_change", np.nan),
++            **_ewaste_for(ewaste_table, country, keys["year"], keys["shock_basis"]),
++            "baseline_global_ghg_tonnes_co2e": baseline,
++        })
++
++        # ---------------- Top foreign supplier countries ----------------
++        foreign = origin.loc[origin["country"] != country].copy()
++        foreign["origin_group"] = foreign["country"].replace(COUNTRY_GROUPS)
++        foreign = foreign.loc[foreign["origin_group"] != country]
++        value_cols = [c for c in [
++            "output_change_usd_mn", "intermediate_exports_usd_mn",
++            "intermediate_exports_to_destination_usd_mn", "ghg_tonnes_co2e",
++        ] if c in foreign.columns]
++        by_country = foreign.groupby("origin_group")[value_cols].sum()
++        # "ROW" is an aggregate of economies, not a country: report it
++        # separately and rank the named countries.
++        rest_of_world = by_country.loc["ROW"] if "ROW" in by_country.index else None
++        ranked = by_country.drop(index="ROW", errors="ignore")
++        top = ranked.sort_values("output_change_usd_mn", ascending=False).head(top_n)
++        headline_rows[-1].update({
++            "rest_of_world_output_change_usd_mn": float(rest_of_world["output_change_usd_mn"]) if rest_of_world is not None else 0.0,
++            "rest_of_world_ghg_tonnes_co2e": float(rest_of_world["ghg_tonnes_co2e"]) if rest_of_world is not None else 0.0,
++            "top_origins_output_change_usd_mn": float(top["output_change_usd_mn"].sum()),
++            "top_origins_ghg_tonnes_co2e": float(top["ghg_tonnes_co2e"].sum()),
++            "top_origins_intermediate_exports_usd_mn": float(top["intermediate_exports_usd_mn"].sum()) if "intermediate_exports_usd_mn" in top else np.nan,
++        })
++
++        for rank, (code, values) in enumerate(top.iterrows(), start=1):
++            sectors = (
++                foreign.loc[foreign["origin_group"] == code]
++                .assign(sector=lambda d: d["sector_code"].astype(str))
++                .groupby("sector")["output_change_usd_mn"].sum()
++                .sort_values(ascending=False)
++            )
++            top_sectors = sectors.head(3)
++            origin_rows.append({
++                **keys,
++                "rank": rank,
++                "origin_country": code,
++                "origin_country_name": country_name(code),
++                "output_change_usd_mn": float(values["output_change_usd_mn"]),
++                "intermediate_exports_usd_mn": float(values.get("intermediate_exports_usd_mn", np.nan)),
++                "intermediate_exports_to_destination_usd_mn": float(values.get("intermediate_exports_to_destination_usd_mn", np.nan)),
++                "ghg_tonnes_co2e": float(values["ghg_tonnes_co2e"]),
++                "share_of_foreign_output_pct": 100 * float(values["output_change_usd_mn"]) / by_country["output_change_usd_mn"].sum(),
++                "top_products": "; ".join(
++                    f"{sector_name(s)} (USD {v:,.1f} mn)" for s, v in top_sectors.items()
++                ),
++            })
++
++    headline = pd.DataFrame(headline_rows)
++    origins = pd.DataFrame(origin_rows)
++
++    capex_path = output_dir / CAPEX_SUMMARY
++    capex = pd.read_csv(capex_path) if capex_path.exists() else None
++
++    return headline, origins, capex
++
++
++# ---------------------------------------------------------------------
++# Text
++# ---------------------------------------------------------------------
++
++def _mt(t: float) -> str:
++    return f"{t / 1e6:,.2f} MtCO2e" if abs(t) >= 1e5 else f"{t / 1e3:,.1f} ktCO2e"
++
++
++def _bn(usd_mn: float) -> str:
++    return f"USD {usd_mn / 1e3:,.2f} bn" if abs(usd_mn) >= 1e3 else f"USD {usd_mn:,.0f} mn"
++
++
++def headline_text(headline: pd.DataFrame, origins: pd.DataFrame, capex: Optional[pd.DataFrame] = None) -> str:
++    lines = ["# Headline results (summary of a summary)", ""]
++    for row in headline.itertuples(index=False):
++        name = country_name(row.shock_destination)
++        period = f"{int(row.first_year)}–{row.year}" if pd.notna(row.first_year) else str(row.year)
++        lines.append(f"## {name}")
++        lines.append("")
++        lines.append(
++            f"Scenario: {row.shock_basis}, {row.attribution}, "
++            f"{row.electricity_demand_sensitivity}, {row.grid_emissions_sensitivity}"
++            + (" (legacy outputs)" if row.legacy_outputs else "") + "."
++        )
++        lines.append("")
++        gain = (
++            f"Data-centre output rises by {_bn(row.dc_output_change_usd_mn)} (2022 USD) over {period}; "
++            f"with supply chains, global gross output rises by {_bn(row.global_output_change_usd_mn)} "
++            f"({_bn(row.destination_output_change_usd_mn)} in {name}, {_bn(row.foreign_output_change_usd_mn)} abroad)"
++        )
++        if pd.notna(row.global_value_added_change_usd_mn):
++            gain += f" and value added by {_bn(row.global_value_added_change_usd_mn)} ({_bn(row.destination_value_added_change_usd_mn)} in {name})"
++        lines.append(gain + ".")
++        lines.append("")
++        emis = (
++            f"Direct emissions: {_mt(row.direct_ghg_tonnes_co2e)} "
++            f"({row.direct_pct_of_global_2022:.4f}% of 2022 global production emissions)"
++        )
++        if row.onsite_btm_generation_ghg_tonnes_co2e > 0:
++            emis += (
++                f", of which {_mt(row.onsite_btm_generation_ghg_tonnes_co2e)} from behind-the-meter gas "
++                f"({row.natgas_kgco2_per_kwh:.3f} kg/kWh vs a projected grid of {row.grid_kgco2_per_kwh:.3f} kg/kWh; "
++                f"+{_mt(row.btm_increase_vs_projected_grid_tonnes_co2e)} relative to grid supply)"
++            )
++        emis += (
++            f". Upstream supply-chain emissions (excluding direct): {_mt(row.upstream_excl_direct_ghg_tonnes_co2e)} "
++            f"({row.upstream_pct_of_global_2022:.4f}%)"
++        )
++        if pd.notna(row.purchased_electricity_ghg_tonnes_co2e):
++            emis += f", of which purchased grid electricity {_mt(row.purchased_electricity_ghg_tonnes_co2e)}"
++        emis += (
++            f". Downstream income-based emissions (excluding direct): {_mt(row.downstream_excl_direct_ghg_tonnes_co2e)} "
++            f"({row.downstream_pct_of_global_2022:.4f}%). Direct plus upstream equals "
++            f"{row.total_pct_of_destination_2022:.2f}% of {name}'s 2022 production emissions."
++        )
++        lines.append(emis)
++        lines.append("")
++        lines.append(
++            f"Operational cooling water: {row.operational_water_ml_level / 1e3:,.1f} billion litres in {row.year} "
++            f"({row.operational_water_ml_change / 1e3:+,.1f} billion litres over {period})."
++        )
++        lines.append("")
++        if pd.notna(row.ewaste_stock_tonnes):
++            text = (
++                f"End-of-life server e-waste: {row.ewaste_stock_tonnes / 1e3:,.1f} kt for the "
++                f"{row.dc_capacity_mw:,.0f} MW installed in {row.year} ({row.servers:,.0f} servers, "
++                f"{row.ewaste_tonnes_per_mw:.3f} t/MW), of which {row.ewaste_new_capacity_tonnes / 1e3:,.1f} kt "
++                f"from capacity added over {period}"
++            )
++            if pd.notna(row.ewaste_annual_tonnes):
++                text += f"; {row.ewaste_annual_tonnes / 1e3:,.1f} kt per year at steady state"
++            lines.append(text + ".")
++            lines.append("")
++        top = origins.loc[origins["shock_destination"] == row.shock_destination].sort_values("rank")
++        if len(top):
++            lines.append(f"Top {len(top)} foreign supplier countries (value of goods and services produced there for the expansion; emissions emitted there):")
++            lines.append("")
++            for o in top.itertuples(index=False):
++                trade = (
++                    f"; cross-border intermediates {_bn(o.intermediate_exports_usd_mn)}"
++                    if pd.notna(o.intermediate_exports_usd_mn) else ""
++                )
++                lines.append(
++                    f"{o.rank}. {o.origin_country_name}: {_bn(o.output_change_usd_mn)} "
++                    f"({o.share_of_foreign_output_pct:.1f}% of foreign supply){trade}; {_mt(o.ghg_tonnes_co2e)}; "
++                    f"mainly {o.top_products}"
++                )
++            lines.append(
++                f"Together: {_bn(row.top_origins_output_change_usd_mn)} and {_mt(row.top_origins_ghg_tonnes_co2e)}"
++                + (f"; cross-border intermediates {_bn(row.top_origins_intermediate_exports_usd_mn)}" if pd.notna(row.top_origins_intermediate_exports_usd_mn) else "")
++                + f". Rest of the world (aggregate): {_bn(row.rest_of_world_output_change_usd_mn)}, {_mt(row.rest_of_world_ghg_tonnes_co2e)}."
++            )
++            lines.append("")
++        if capex is not None and not capex.empty:
++            c = capex.loc[(capex["shock_destination"] == row.shock_destination) & (capex["shock_basis"] == "cumulative_vs_first_year")]
++            if len(c):
++                c = c.sort_values("year").iloc[-1]
++                lines.append(
++                    f"Construction and equipment (one-off): {_bn(c.capex_usd_mn)} of capex embodies {_mt(c.embodied_capex_ghg_tonnes_co2e)}."
++                )
++                lines.append("")
++    lines.append(
++        "Direct, upstream and downstream are non-overlapping. Downstream is an income-based "
++        "allocation (Ghosh), not a causal impact; do not add it to upstream."
++    )
++    return "\n".join(lines) + "\n"
++
++
++def write_headline(
++    output_dir: Path,
++    physical: Optional[pd.DataFrame] = None,
++    **kwargs,
++) -> tuple[pd.DataFrame, pd.DataFrame]:
++    output_dir = Path(output_dir)
++    headline, origins, capex = summarise(output_dir, physical=physical, **kwargs)
++    headline.to_csv(output_dir / "headline_summary.csv", index=False)
++    origins.to_csv(output_dir / "headline_top_origin_countries.csv", index=False)
++    (output_dir / "headline_summary.md").write_text(headline_text(headline, origins, capex), encoding="utf-8")
++    LOG.info("Headline summary written to %s", output_dir / "headline_summary.md")
++    return headline, origins
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("--output-dir", type=Path, required=True, help="Model output directory (also where results are written).")
++    parser.add_argument("--physical", type=Path, default=None, help="physical_operational_metrics.csv if not in --output-dir.")
++    parser.add_argument("--upstream-file", type=Path, default=None)
++    parser.add_argument("--downstream-file", type=Path, default=None)
++    parser.add_argument("--by-origin-file", type=Path, default=None)
++    parser.add_argument("--year", type=int, default=None)
++    parser.add_argument("--shock-basis", default="cumulative_vs_first_year")
++    parser.add_argument("--attribution", default="all_expansion")
++    parser.add_argument("--electricity", default="physical_facility_demand")
++    parser.add_argument("--grid", default=None, help="Grid sensitivity; default btm_natgas > projected_grid > average_grid.")
++    parser.add_argument("--top-n", type=int, default=5)
++    args = parser.parse_args()
++    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
++    physical = pd.read_csv(args.physical) if args.physical else None
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    write_headline(
++        args.output_dir,
++        physical=physical,
++        year=args.year,
++        shock_basis=args.shock_basis,
++        attribution=args.attribution,
++        electricity=args.electricity,
++        grid=args.grid,
++        top_n=args.top_n,
++        by_origin_file=args.by_origin_file,
++        upstream_file=args.upstream_file,
++        downstream_file=args.downstream_file,
++    )
++    print((args.output_dir / "headline_summary.md").read_text(encoding="utf-8"))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/test_methodology_fixes.py b/tests/test_methodology_fixes.py
+new file mode 100644
+index 0000000..c9b1774
+--- /dev/null
++++ b/tests/test_methodology_fixes.py
+@@ -0,0 +1,216 @@
++"""Tests for the upstream/direct/downstream methodology (synthetic ICIO)."""
++import sys
++import types
++from pathlib import Path
++
++import numpy as np
++import pandas as pd
++import pytest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++
++
++@pytest.fixture()
++def model(monkeypatch):
++    monkeypatch.setitem(sys.modules, "pyreadr", types.ModuleType("pyreadr"))
++    import importlib
++    return importlib.import_module("global_datacentre_icio_model_v2")
++
++
++SECTORS = ["01", "26", "35", "62T63"]
++COUNTRIES = ["CAN", "USA"]
++
++
++def make_economy():
++    keys = [f"{c}_{s}" for c in COUNTRIES for s in SECTORS]
++    rng = np.random.default_rng(3)
++    A = rng.uniform(0.0, 0.06, (len(keys), len(keys)))
++    A = pd.DataFrame(A, index=keys, columns=keys)
++    A.loc["CAN_35", "CAN_62T63"] = 0.004   # ICIO-style tiny electricity coefficient
++    A.loc["CAN_35", "CAN_01"] = 0.10       # other sectors buy electricity
++    A.loc["CAN_01", "CAN_35"] = 0.15       # electricity buys fuel
++    X = pd.Series(np.linspace(100, 800, len(keys)), index=keys)
++    emissions = pd.DataFrame({
++        "io_key": keys,
++        "ghg_tonnes_co2e": [X[k] * (2000 if k.endswith("_35") else 50) for k in keys],
++        "source": "TEST",
++    })
++    return A, X, emissions
++
++
++def make_scenarios(model, A, share_customer=0.0):
++    sector_map = pd.DataFrame({
++        "io_key": A.index,
++        "country": [k.split("_", 1)[0] for k in A.index],
++        "sector_code": [k.split("_", 1)[1] for k in A.index],
++        "sector_label": [k.split("_", 1)[1] for k in A.index],
++        "is_electricity_sector": [k.endswith("_35") for k in A.index],
++    })
++    dc_map = pd.DataFrame({
++        "country": ["CAN"],
++        "dc_proxy_io_key": ["CAN_62T63"],
++        "electricity_io_key": ["CAN_35"],
++        "dc_targets": [[("CAN_62T63", 1.0)]],
++        "dc_proxy_label": ["CAN_62T63"],
++    })
++    years = [2029, 2030]
++    out = [100.0, 300.0]
++    gwh = [400.0, 1200.0]
++    sc = pd.DataFrame({
++        "country": "CAN",
++        "year": years,
++        "dc_output_usd_mn": out,
++        "dc_output_yoy_usd_mn": [0.0, 200.0],
++        "dc_output_cumulative_usd_mn": [0.0, 200.0],
++        "dc_output_shock_usd_mn": [0.0, 300.0],
++        "facility_electricity_gwh": gwh,
++        "facility_gwh_yoy": [0.0, 800.0],
++        "facility_gwh_cumulative": [0.0, 800.0],
++        "price_2022_usd_mwh": 60.0,
++        "kgco2_per_kwh": 0.04,
++        "kgco2_per_kwh_natgas": 0.36,
++        "us_customer_share": share_customer,
++        "us_parent_operator_share": np.nan,
++    })
++    sc["us_customer_output_shock_usd_mn"] = sc["dc_output_shock_usd_mn"] * share_customer
++    sc["us_parent_output_shock_usd_mn"] = np.nan
++    return sector_map, dc_map, sc
++
++
++def run(model, share_customer=0.0, **kw):
++    A, X, emissions = make_economy()
++    sector_map, dc_map, sc = make_scenarios(model, A, share_customer)
++    import tempfile
++    with tempfile.TemporaryDirectory() as d:
++        tmp = Path(d) / "ext.csv"
++        emissions.to_csv(tmp, index=False)
++        ext, _ = model.load_emissions_extension(tmp, X, sector_map)
++    res = model.run_leontief(A, X, sector_map, ext, dc_map, sc, **kw)
++    return A, X, ext, res
++
++
++def pick(df, **f):
++    m = pd.Series(True, index=df.index)
++    for k, v in f.items():
++        m &= df[k] == v
++    return df.loc[m]
++
++
++def test_final_demand_with_extra_equals_mixed_model(model):
++    from scipy.linalg import lu_factor
++    A, X, _ = make_economy()
++    a = A.to_numpy()
++    n = len(a)
++    s = [A.index.get_loc("CAN_62T63")]
++    new_col = a[:, s].copy() * 0.5
++    new_col[A.index.get_loc("CAN_35")] = 0.45
++    t = np.array([10.0])
++    lu, piv = lu_factor(np.eye(n) - a)
++    _, dx = model.gross_output_to_final_demand(lu, piv, n, s, t, extra_demand=(new_col - a[:, s]) @ t)
++    o = [i for i in range(n) if i not in s]
++    expected = np.linalg.solve(np.eye(n - 1) - a[np.ix_(o, o)], new_col[o] @ t)
++    np.testing.assert_allclose(dx[o], expected, rtol=1e-10)
++    assert dx[s][0] == pytest.approx(10.0)
++
++
++def test_hybrid_column(model):
++    A, _, _ = make_economy()
++    a = A.to_numpy()
++    s = [A.index.get_loc("CAN_62T63")]
++    e = A.index.get_loc("CAN_35")
++    cols, f = model.hybrid_target_columns(a, s, e, 0.6, grid_share=0.08)
++    assert cols[e, 0] == pytest.approx(0.6 * 0.08)
++    assert f[0] == pytest.approx(0.4 / (1 - a[e, s[0]]))
++    assert cols[:, 0].sum() <= 1
++    with pytest.raises(ValueError, match="between 0% and 100%"):
++        model.hybrid_target_columns(a, s, e, 1.2)
++
++
++def test_components_and_fixes(model):
++    A, X, ext, (detail, summary, fd, ddetail, dsummary) = run(model, share_customer=0.0)
++
++    # Attribution share 0 -> no rows (previously electricity alone was shocked).
++    assert summary.loc[summary.attribution == "us_customer_demand"].empty
++
++    base = dict(year=2030, shock_basis="cumulative_vs_first_year", attribution="all_expansion")
++    phys = pick(summary, electricity_demand_sensitivity="physical_facility_demand", **base)
++    assert set(phys.grid_emissions_sensitivity) == {"average_grid", "projected_grid", "btm_natgas"}
++
++    for r in summary.itertuples():
++        assert r.direct_ghg_tonnes_co2e + r.upstream_excl_direct_ghg_tonnes_co2e == pytest.approx(r.global_upstream_ghg_tonnes_co2e)
++
++    # Physical: electricity output exceeds the DC's own purchases (indirect use kept).
++    det = pick(detail, electricity_demand_sensitivity="physical_facility_demand", grid_emissions_sensitivity="average_grid", **base)
++    elec_dx = det.loc[det.io_key == "CAN_35", "output_change_usd_mn"].iloc[0]
++    direct_purchase = 800 * 60 / 1000
++    assert elec_dx > direct_purchase
++
++    # Projected grid: purchased electricity emissions = GWh x factor.
++    proj = pick(phys, grid_emissions_sensitivity="projected_grid").iloc[0]
++    assert proj.purchased_electricity_ghg_tonnes_co2e == pytest.approx(800 * 1000 * 0.04)
++
++    # BTM: on-site gas is direct; only 8% of electricity is bought from the grid.
++    btm = pick(phys, grid_emissions_sensitivity="btm_natgas").iloc[0]
++    assert btm.onsite_btm_generation_ghg_tonnes_co2e == pytest.approx(0.92 * 800 * 1000 * 0.36)
++    assert btm.purchased_electricity_ghg_tonnes_co2e == pytest.approx(0.08 * 800 * 1000 * 0.04)
++    assert btm.direct_ghg_tonnes_co2e == pytest.approx(btm.direct_datacentre_industry_ghg_tonnes_co2e + btm.onsite_btm_generation_ghg_tonnes_co2e)
++
++    # Downstream: identical across electricity sensitivities (no electricity target).
++    d = pick(dsummary, grid_emissions_sensitivity="average_grid", **base)
++    vals = d.global_downstream_ghg_tonnes_co2e.to_numpy()
++    assert np.allclose(vals, vals[0])
++    for r in dsummary.itertuples():
++        assert r.downstream_excl_direct_ghg_tonnes_co2e == pytest.approx(r.global_downstream_ghg_tonnes_co2e - r.direct_datacentre_industry_ghg_tonnes_co2e)
++
++    # Value added and trade columns are populated and consistent.
++    assert (summary.global_output_change_usd_mn > summary.target_gross_output_change_usd_mn).all()
++    assert (summary.cross_border_intermediates_usd_mn >= 0).all()
++
++
++def test_headline_summary_new_outputs(model, tmp_path):
++    import summarize_results as sr
++    A, X, ext, (detail, summary, fd, ddetail, dsummary) = run(model)
++    summary.to_csv(tmp_path / sr.UPSTREAM_SUMMARY, index=False)
++    dsummary.to_csv(tmp_path / sr.DOWNSTREAM_SUMMARY, index=False)
++    keys = ["year", "shock_basis", "shock_destination", "grid_emissions_sensitivity",
++            "electricity_demand_sensitivity", "attribution", "country", "sector_code",
++            "sector_label", "is_datacentre_industry"]
++    detail.groupby(keys, as_index=False)[[
++        "output_change_usd_mn", "value_added_change_usd_mn", "intermediate_exports_usd_mn",
++        "intermediate_exports_to_destination_usd_mn", "ghg_tonnes_co2e",
++    ]].sum().to_csv(tmp_path / sr.BY_ORIGIN, index=False)
++    physical = pd.DataFrame({
++        "country": "CAN", "year": [2029, 2030], "facility_electricity_gwh": [400.0, 1200.0],
++        "kgco2_per_kwh": 0.04, "kgco2_per_kwh_natgas": 0.36,
++        "operational_water_ml": [10.0, 30.0], "direct_grid_emissions_ktco2": [16.0, 48.0],
++    })
++    head, origins = sr.write_headline(tmp_path, physical=physical, top_n=1)
++    row = head.iloc[0]
++    assert row.grid_emissions_sensitivity == "btm_natgas"
++    assert not row.legacy_outputs
++    assert row.btm_increase_vs_projected_grid_tonnes_co2e == pytest.approx(0.92 * 800 * 1000 * (0.36 - 0.04))
++    assert origins.iloc[0].origin_country == "USA"
++    assert "Top 1 foreign supplier" in (tmp_path / "headline_summary.md").read_text()
++
++
++def test_ewaste_reference_case():
++    import ewaste
++    cap = pd.DataFrame({"country": ["CAN", "CAN"], "year": [2029, 2030], "dc_capacity_mw": [100.0, 275.0]})
++    t = ewaste.ewaste_metrics(cap, server_lifetime_years=5)
++    row = t.loc[t.year == 2030].iloc[0]
++    assert row.racks == pytest.approx(2090)
++    assert row.servers == pytest.approx(37620)
++    assert row.ewaste_stock_tonnes == pytest.approx(4890.6)
++    assert row.ewaste_new_capacity_tonnes == pytest.approx(175 * 17.784)
++    assert row.ewaste_annual_tonnes == pytest.approx(4890.6 / 5)
++
++
++def test_ewaste_overrides():
++    import ewaste
++    cap = pd.DataFrame({"country": ["IND"], "year": [2030], "dc_capacity_mw": [10.0]})
++    over = pd.DataFrame({"country": ["IND"], "year": [2030], "server_kg": [100.0]})
++    row = ewaste.ewaste_metrics(cap, coefficients=over).iloc[0]
++    assert row.ewaste_stock_tonnes == pytest.approx(10 * 7.6 * 18 * 0.1)
++    assert row.coefficient_source == ewaste.COEFFICIENT_FILE
++    assert np.isnan(row.ewaste_annual_tonnes)

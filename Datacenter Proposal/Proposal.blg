@@ -1,0 +1,90 @@
+This is BibTeX, Version 0.99d (TeX Live 2025)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: Proposal.aux
+The style file: plainnat.bst
+Database file #1: oecd_bibliography.bib
+Warning--entry type for "canadaGreenhouseGasAir2026" isn't style-file defined
+--line 23 of file oecd_bibliography.bib
+Warning--entry type for "CanadasAIElectricity2026" isn't style-file defined
+--line 34 of file oecd_bibliography.bib
+Warning--entry type for "carloDataCentredShifting2026" isn't style-file defined
+--line 45 of file oecd_bibliography.bib
+Warning--entry type for "cbcnewsCanadasCloudComputing2026" isn't style-file defined
+--line 65 of file oecd_bibliography.bib
+Warning--entry type for "CERCanadasEnergy" isn't style-file defined
+--line 76 of file oecd_bibliography.bib
+Warning--entry type for "DataCentresCanada" isn't style-file defined
+--line 95 of file oecd_bibliography.bib
+Warning--entry type for "DigitalSupplyuseTables2021" isn't style-file defined
+--line 106 of file oecd_bibliography.bib
+Warning--entry type for "OECDDataExplorer" isn't style-file defined
+--line 198 of file oecd_bibliography.bib
+Warning--entry type for "OECDDataExplorerb" isn't style-file defined
+--line 205 of file oecd_bibliography.bib
+Warning--entry type for "presseDataCentresEmitting2026" isn't style-file defined
+--line 225 of file oecd_bibliography.bib
+Warning--entry type for "ProjectionICIOTables2026" isn't style-file defined
+--line 238 of file oecd_bibliography.bib
+Warning--to sort, need author or key in CanadasAIElectricity2026
+Warning--to sort, need author or key in DataCentresCanada
+Warning--to sort, need author or key in CERCanadasEnergy
+Warning--to sort, need author or key in cbcnewsCanadasCloudComputing2026
+Warning--to sort, need author or key in ProjectionICIOTables2026
+Warning--to sort, need author or key in DigitalSupplyuseTables2021
+Warning--to sort, need author or key in OECDDataExplorerb
+Warning--to sort, need author or key in OECDDataExplorer
+Warning--empty year in CERCanadasEnergy
+Warning--empty year in CanadasAIElectricity2026
+Warning--empty year in DataCentresCanada
+Warning--empty year in DigitalSupplyuseTables2021
+Warning--empty year in OECDDataExplorer
+Warning--empty year in OECDDataExplorerb
+Warning--empty year in ProjectionICIOTables2026
+Warning--empty year in cbcnewsCanadasCloudComputing2026
+Warning--empty year in canadaGreenhouseGasAir2026
+Warning--empty year in carloDataCentredShifting2026
+Warning--empty year in oecdOECDHandbookCompiling2023
+Warning--empty year in oecdOECDHandbookCompiling2023
+Warning--empty year in presseDataCentresEmitting2026
+You've used 12 entries,
+            2773 wiz_defined-function locations,
+            658 strings with 8059 characters,
+and the built_in function-call counts, 3255 in all, are:
+= -- 297
+> -- 51
+< -- 4
++ -- 28
+- -- 15
+* -- 212
+:= -- 361
+add.period$ -- 31
+call.type$ -- 12
+change.case$ -- 40
+chr.to.int$ -- 11
+cite$ -- 53
+duplicate$ -- 185
+empty$ -- 409
+format.name$ -- 21
+if$ -- 747
+int.to.chr$ -- 2
+int.to.str$ -- 1
+missing$ -- 2
+newline$ -- 63
+num.names$ -- 16
+pop$ -- 163
+preamble$ -- 1
+purify$ -- 29
+quote$ -- 0
+skip$ -- 164
+stack$ -- 0
+substring$ -- 32
+swap$ -- 14
+text.length$ -- 0
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 127
+warning$ -- 21
+while$ -- 12
+width$ -- 0
+write$ -- 131
+(There were 32 warnings)
