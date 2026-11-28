@@ -33,6 +33,17 @@ REM   Comment out the next line to run without the split.
 set "canada_split=--split-canada-dsut --canada-dsut-file "%DATA_DIR%\canada_dsut_2020.csv" --sut-year 2022 --canada-dc-target cloud_and_hosting --dc-origin-shares default"
 @REM set "cloud_share=--canada-cloud-share-override 0.45"
 
+REM ------------------------------------------------------------------
+REM Indian split of IND_62T63 (data centres vs rest of IT services) from the
+REM 2023-24 India IOT with an AI-DC sector. dc_sector_map.csv must map IND
+REM to IND_62T63. Comment out to run without the split.
+set "india_split=--split-india-iot "%DATA_DIR%\IOT_2023-24_RAS.xlsx""
+
+REM Electricity cost share options (see docs\methodology.md, section 6):
+REM   --output-includes-power-passthrough  rent per MW excludes power; add the bill
+REM   --it-utilisation 0.7                 electricity file assumes full load
+@REM set "power_opts=--output-includes-power-passthrough --it-utilisation 0.7"
+
 REM TiVA and GHG footprint indicators on the (split) ICIO.
 set "indicators=--tiva-ghg-indicators"
 @REM set "indicators=--tiva-ghg-indicators --indicators-only"
@@ -49,7 +60,7 @@ REM Run model
 echo.
 echo Running the data-centre ICIO model...
 
-python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %cloud_share% %indicators% %elec_opts% %capex% %ewaste_opts% %check_only%
+python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %india_split% %cloud_share% %indicators% %power_opts% %elec_opts% %capex% %ewaste_opts% %check_only%
 
 if errorlevel 1 (
     echo.

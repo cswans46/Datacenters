@@ -1,0 +1,78 @@
+{
+  "sut_year": 2022,
+  "output_518": 13234952.0,
+  "output_rest_of_j62_63": 104259951.0,
+  "share_518_in_j62_63": 0.11264277566151104,
+  "industries_518": [
+    "Computing infrastructure providers, data processing, web hosting, and related services [BS518000]"
+  ],
+  "industries_rest_of_j62_63": [
+    "Web search portals, libraries, archives, and all other information services [BS519000]",
+    "Computer systems design and related services [BS541500]"
+  ],
+  "products_518": [
+    "Data processing, hosting, and related services (except software as a service, on cloud) [MPS518000]"
+  ],
+  "products_rest_of_j62_63": [
+    "Computer systems design and related services (except software development) [MPS541503]",
+    "Custom software design and development services [MPS541501]",
+    "Internet advertising [MPS519002]",
+    "Other information services [MPS519008]"
+  ],
+  "dsut_year": 2020,
+  "dsut_source": "D:\\Research\\Datacenters\\canada_dsut_2020.csv",
+  "dsut_cloud_share_of_51821_output": 0.3681261,
+  "cloud_share_applied": 0.3681261,
+  "cloud_share_overridden": false,
+  "weights": {
+    "CAN_62T63_CLD": 0.04146674569744698,
+    "CAN_62T63_DPH": 0.07117602996406407,
+    "CAN_62T63_OTH": 0.887357224338489
+  },
+  "row_block_totals_usd_mn": {
+    "domestic_intermediate": 51134.92962662564,
+    "foreign_intermediate": 13152.253816612967,
+    "domestic_final": 15213.163522062985,
+    "foreign_final": 5845.231154047496
+  },
+  "row_block_shares": {
+    "domestic_intermediate": {
+      "CAN_62T63_CLD": 0.04871616212851504,
+      "CAN_62T63_DPH": 0.08361936672563317,
+      "CAN_62T63_OTH": 0.8676644711458519
+    },
+    "domestic_final": {
+      "CAN_62T63_CLD": 0.031012713583624126,
+      "CAN_62T63_DPH": 0.05323209704953699,
+      "CAN_62T63_OTH": 0.9157551893668389
+    },
+    "foreign_intermediate": {
+      "CAN_62T63_CLD": 0.03032529727226426,
+      "CAN_62T63_DPH": 0.052052174122087465,
+      "CAN_62T63_OTH": 0.9176225286056483
+    },
+    "foreign_final": {
+      "CAN_62T63_CLD": 0.030325297272264257,
+      "CAN_62T63_DPH": 0.05205217412208747,
+      "CAN_62T63_OTH": 0.9176225286056483
+    }
+  },
+  "subsector_output_usd_mn": {
+    "CAN_62T63_CLD": 3539.0029848155204,
+    "CAN_62T63_DPH": 6074.558739863932,
+    "CAN_62T63_OTH": 75732.00676138116
+  },
+  "subsector_value_added_share": {
+    "CAN_62T63_CLD": 0.6505304747714853,
+    "CAN_62T63_DPH": 0.6505304747714853,
+    "CAN_62T63_OTH": 0.57569779659619
+  },
+  "parent_electricity_input_coefficient": 0.0036088886238431163,
+  "subsector_electricity_input_coefficient": {
+    "CAN_62T63_CLD": 0.002769266599391182,
+    "CAN_62T63_DPH": 0.0027692665993911823,
+    "CAN_62T63_OTH": 0.0037154718044909206
+  },
+  "parent_output_usd_mn": 85345.56848606061,
+  "share_518_applied": 0.11264277566151104
+}

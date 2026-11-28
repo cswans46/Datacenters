@@ -710,6 +710,9 @@ class CanadaSplitPlan:
     cloud_share: float
     share_518: float
     diagnostics: dict
+    # Value-added share of output by subsector (SUT: 1 - total input
+    # intensity), used as RAS column targets. None disables the targets.
+    va_share: Optional[dict] = None
 
     @property
     def cloud_key(self) -> str:
@@ -806,7 +809,14 @@ def build_split_plan(
         "weights": dict(zip(sub_keys, weights.tolist())),
     })
 
+    # Value-added shares (SUT basic prices): one minus total input intensity.
+    va_518 = float(1.0 - intensity["518"].sum())
+    va_oth = float(1.0 - intensity["OTH"].sum())
+    va_share = {sub_keys[0]: va_518, sub_keys[1]: va_518, sub_keys[2]: va_oth}
+    diagnostics["sut_value_added_share"] = {"518": va_518, "OTH": va_oth, "J": float(1.0 - intensity["J"].sum())}
+
     return CanadaSplitPlan(
+        va_share=va_share,
         parent_key=parent_key,
         sub_keys=sub_keys,
         weights=weights,
@@ -867,9 +877,15 @@ def split_icio(
     X: pd.Series,
     FD: pd.DataFrame,
     plan: CanadaSplitPlan,
+    rebalance: bool = True,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, dict]:
     """
     Replace plan.parent_key with its subsectors in A, X and FD.
+
+    With ``rebalance`` (default) the subsector columns are RAS-balanced so
+    that each subsector's value added matches the SUT value-added share
+    (scaled to the parent's value added); rows still add up to the parent
+    column (split_rebalance.ras_split_columns).
 
     Returns the split A, X, FD and a diagnostics dictionary including
     the row-block shares used.
@@ -907,6 +923,20 @@ def split_icio(
     shares = w[None, :] * r
     shares /= shares.sum(axis=1, keepdims=True)
     new_cols = Z[:, [j]] * shares                           # n x K
+    va_share_before_ras = 1.0 - new_cols.sum(axis=0) / (w * x[j])
+
+    col_info: dict = {}
+    if rebalance and plan.va_share is not None:
+        import split_rebalance as sr
+
+        parent_va = x[j] - Z[:, j].sum()
+        x_sub = w * x[j]
+        va_targets = sr.scaled_va_targets(
+            parent_va, x_sub, [plan.va_share[k] for k in plan.sub_keys],
+        )
+        new_cols, col_info = sr.ras_split_columns(
+            new_cols, Z[:, j], x_sub, va_targets, label="Canada DC columns",
+        )
 
     Zc = np.concatenate([Z[:, :j], new_cols, Z[:, j + 1:]], axis=1)   # n x (n+K-1)
     new_keys = keys[:j] + plan.sub_keys + keys[j + 1:]
@@ -977,6 +1007,8 @@ def split_icio(
         "row_block_shares": q.to_dict(),
         "subsector_output_usd_mn": dict(zip(plan.sub_keys, (w * x[j]).tolist())),
         "subsector_value_added_share": dict(zip(plan.sub_keys, va_share.tolist())),
+        "subsector_value_added_share_before_ras": dict(zip(plan.sub_keys, va_share_before_ras.tolist())),
+        "column_ras": col_info,
         "parent_electricity_input_coefficient": parent_elec,
         "subsector_electricity_input_coefficient": {
             k: float(As[elec_rows, j + m].sum()) for m, k in enumerate(plan.sub_keys)

@@ -75,8 +75,9 @@ CALIBRATION = "dc_output_and_electricity_calibration.csv"
 LEGACY_BTM_SHARE = 0.92
 
 # Data-centre proxy sectors when the by-origin file has no
-# is_datacentre_industry flag: J62_63 / 62T63, or its CLD and DPH split.
-DC_SECTOR_PATTERN = re.compile(r"^(J)?62(T|_)63(_CLD|_DPH)?$")
+# is_datacentre_industry flag: J62_63 / 62T63, or its CLD/DPH (Canada) or
+# DC (India) split.
+DC_SECTOR_PATTERN = re.compile(r"^(J)?62(T|_)63(_CLD|_DPH|_DC)?$")
 
 COUNTRY_NAMES = {
     "USA": "United States", "CHN": "China", "CN1": "China", "CN2": "China",

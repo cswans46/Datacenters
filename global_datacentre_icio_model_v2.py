@@ -1696,8 +1696,24 @@ def build_scenarios(
     owner,
     dc_map,
     A,
+    it_utilisation: float = 1.0,
+    output_includes_power_passthrough: bool = False,
 ):
-    """Create physical metrics and direct/electricity-implied output shocks."""
+    """
+    Create physical metrics and direct/electricity-implied output shocks.
+
+    it_utilisation
+        Average share of capacity drawn over the year. Multiplies the
+        electricity demand in dc_electricity_demand.csv; use it when that file
+        assumes full load (electricity_mw = capacity x PUE).
+    output_includes_power_passthrough
+        Treat output per MW (price_mn_MW_2022) as rent that excludes power,
+        as in wholesale colocation leases, and add the facility electricity
+        bill to data-centre output (power resold to tenants):
+        output = capacity x rent per MW + facility GWh x price / 1000.
+    """
+    if not 0 < it_utilisation <= 1:
+        raise ValueError("--it-utilisation must lie in (0, 1].")
 
     # Require a 2030 output scenario for every required country.
     countries_with_2030 = set(
@@ -1733,6 +1749,11 @@ def build_scenarios(
         raise ValueError(
             "Electricity demand is missing price, grid, PUE or WUE observations."
         )
+
+    if it_utilisation != 1.0:
+        LOG.info("Scaling electricity demand by IT utilisation %.2f.", it_utilisation)
+        physical["electricity_gwh"] = physical["electricity_gwh"] * it_utilisation
+    physical["it_utilisation"] = it_utilisation
 
     physical["facility_electricity_gwh"] = np.where(
         physical["demand_basis"].eq("facility"),
@@ -1897,6 +1918,18 @@ def build_scenarios(
         scenarios["us_parent_operator_share"] = np.nan
 
     scenarios = scenarios.sort_values(["country", "year"]).reset_index(drop=True)
+
+    # Output with power pass-through (colocation rent excludes electricity).
+    scenarios["dc_rent_usd_mn"] = scenarios["dc_output_usd_mn"]
+    scenarios["power_passthrough_usd_mn"] = 0.0
+    if output_includes_power_passthrough:
+        scenarios["power_passthrough_usd_mn"] = (
+            scenarios["facility_electricity_gwh"] * scenarios["price_2022_usd_mwh"] / 1000.0
+        )
+        scenarios["dc_output_usd_mn"] = (
+            scenarios["dc_rent_usd_mn"] + scenarios["power_passthrough_usd_mn"]
+        )
+        LOG.info("Data-centre output includes the power pass-through (rent + electricity bill).")
 
     # Direct output scenario: output levels are in constant 2022 USD mn.
     scenarios["dc_output_yoy_usd_mn"] = (
@@ -3177,6 +3210,19 @@ def parse_args():
              "electricity coefficient is replaced by the physical cost share.",
     )
     elec.add_argument(
+        "--it-utilisation",
+        type=float,
+        default=1.0,
+        help="Average share of capacity drawn over the year (0-1]. Scales the "
+             "electricity demand file; use when it assumes full load.",
+    )
+    elec.add_argument(
+        "--output-includes-power-passthrough",
+        action="store_true",
+        help="Treat price_mn_MW_2022 as rent excluding power (wholesale colocation) "
+             "and add the facility electricity bill to data-centre output.",
+    )
+    elec.add_argument(
         "--emissions-extension-year",
         type=int,
         default=2022,
@@ -3260,8 +3306,39 @@ def parse_args():
         help="Country-of-origin shares for the imported inputs of CLD and DPH "
              "(dc_origin_override.py); 'default' uses the built-in C26 variant.",
     )
+    split.add_argument(
+        "--no-split-rebalance",
+        action="store_true",
+        help="Do not RAS-balance the split columns to source-table value-added shares "
+             "(Canada SUT, India IOT).",
+    )
     split.add_argument("--sut-pattern-518", default=cds.DEFAULT_518_PATTERN)
     split.add_argument("--sut-pattern-other-j", default=cds.DEFAULT_OTHER_J_PATTERN)
+
+    # --------------------------------------------------------------
+    # Indian split of IND_62T63 (2023-24 India IOT with AI-DC)
+    # --------------------------------------------------------------
+    india = parser.add_argument_group("Indian IOT split")
+    india.add_argument(
+        "--split-india-iot",
+        type=Path,
+        default=None,
+        help="India IOT workbook with an AI-DC sector (e.g. IOT_2023-24_RAS.xlsx). "
+             "Splits IND_62T63 into IND_62T63_DC and IND_62T63_OTH.",
+    )
+    india.add_argument("--india-iot-sheet", default="Z RAS Final")
+    india.add_argument(
+        "--india-dc-share",
+        type=float,
+        default=None,
+        help="Data-centre share of IND_62T63 output. Default: AI-DC output / "
+             "(AI-DC + Computer related services) in the IOT.",
+    )
+    india.add_argument(
+        "--india-split-emissions-basis",
+        choices=["output", "electricity_input"],
+        default="output",
+    )
 
     # --------------------------------------------------------------
     # TiVA and GHG footprint indicators
@@ -3307,7 +3384,7 @@ def apply_canada_split(args, A, X, FD):
         parent_sector=cds.resolve_parent_sector(A.index),
     )
 
-    A, X, FD, split_diag = cds.split_icio(A, X, FD, plan)
+    A, X, FD, split_diag = cds.split_icio(A, X, FD, plan, rebalance=not args.no_split_rebalance)
     cds.write_split_diagnostics(args.output_dir / "canada_dsut_split", plan, split_diag)
 
     # Country-of-origin override for the data-centre sectors (CLD, DPH).
@@ -3323,6 +3400,21 @@ def apply_canada_split(args, A, X, FD):
         out.mkdir(parents=True, exist_ok=True)
         odiag.to_csv(out / "dc_origin_override.csv", index=False)
         LOG.info("Applied data-centre origin override from %s", shares_path)
+    return A, X, FD, plan
+
+
+def apply_india_split(args, A, X, FD):
+    """Split IND_62T63 into data centres (DC) and the rest (OTH) with the India IOT."""
+    import india_iot_split as iis
+
+    plan = iis.prepare_india_split(
+        args.split_india_iot,
+        parent_sector=cds.resolve_parent_sector(A.index, home_country="IND"),
+        sheet=args.india_iot_sheet,
+        dc_share_override=args.india_dc_share,
+    )
+    A, X, FD, diag = iis.split_icio_india(A, X, FD, plan, rebalance=not args.no_split_rebalance)
+    iis.write_split_diagnostics(args.output_dir / "india_iot_split", plan, diag)
     return A, X, FD, plan
 
 
@@ -3388,24 +3480,57 @@ def main():
     LOG.info("ICIO X industries: %s", len(X))
     LOG.info("ICIO FD dimensions: %s", FD.shape)
 
-    # 1b. Optionally split Canadian data centres out of CAN_J62_63.
+    # 1b. Optionally split Canadian data centres out of CAN_J62_63 / CAN_62T63.
     plan = None
-    dc_overrides = None
-    emissions_transform = None
+    dc_overrides = {}
+    transforms = []
 
     if args.split_canada_dsut:
         A, X, FD, plan = apply_canada_split(args, A, X, FD)
-        dc_overrides = {
-            "CAN": (plan.parent_key, plan.dc_targets(args.canada_dc_target)),
-        }
+        dc_overrides["CAN"] = (plan.parent_key, plan.dc_targets(args.canada_dc_target))
 
-        def emissions_transform(df, _plan=plan, _A=A, _X=X):
+        def canada_transform(df, _plan=plan, _A=A, _X=X):
             return cds.split_emissions_frame(
                 df, _plan, A_split=_A, X_split=_X,
                 basis=args.canada_split_emissions_basis,
             )
 
+        transforms.append(canada_transform)
         LOG.info("Split ICIO dimensions: %s x %s", *A.shape)
+
+    # 1c. Optionally split Indian data centres out of IND_62T63 (India IOT).
+    if args.split_india_iot:
+        A, X, FD, india_plan = apply_india_split(args, A, X, FD)
+        dc_overrides["IND"] = (india_plan.parent_key, [(india_plan.dc_key, 1.0)])
+
+        def india_transform(df, _plan=india_plan, _A=A, _X=X):
+            import split_rebalance as sr
+
+            electricity = [k for k in _A.index if k.startswith("IND_") and cds.normalise_sector_code(cds.sector_of(k)) == "35"]
+            return sr.split_emissions_by_basis(
+                df, _plan.parent_key, _plan.sub_keys, _X, A_split=_A,
+                electricity_keys=electricity, basis=args.india_split_emissions_basis,
+                label="split_india_iot",
+            )
+
+        transforms.append(india_transform)
+        LOG.info("Split ICIO dimensions: %s x %s", *A.shape)
+
+    def emissions_transform(df):
+        for transform in transforms:
+            df = transform(df)
+        return df
+
+    if not transforms:
+        emissions_transform = None  # noqa: F811
+    dc_overrides = dc_overrides or None
+
+    # 1d. Balance check of the (split) table: row identity and value added.
+    import split_rebalance as sr
+
+    balance, negative_va = sr.balance_report(A, X, FD, tolerance=args.icio_identity_tolerance)
+    sr.log_balance(balance, negative_va)
+    negative_va.to_csv(args.output_dir / "icio_negative_value_added.csv", index=False)
 
     # 2. Load sector maps.
     sector_map, dc_map = load_sector_maps(A, args.data_dir, dc_overrides)
@@ -3467,6 +3592,8 @@ def main():
         owner=owner,
         dc_map=dc_map,
         A=A,
+        it_utilisation=args.it_utilisation,
+        output_includes_power_passthrough=args.output_includes_power_passthrough,
     )
 
     physical.to_csv(

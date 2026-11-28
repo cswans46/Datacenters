@@ -125,11 +125,81 @@ Columns (cost structures): each input cell is split in proportion to
 $w_k r_k(g)$, where $r_k(g)$ is the SUT input intensity of subsector $k$
 for input group $g$ relative to J62_63. Rows (sales structures) are split
 by destination block (domestic/foreign × intermediate/final) and
-RAS-balanced. The split is exact in aggregate. Direct emissions of
+RAS-balanced. The columns are then RAS-balanced to SUT value-added
+targets (section 4c). The split is exact in aggregate. Direct emissions of
 `CAN_J62_63` are split by output (equal intensity, default) or by
 electricity purchases. The data-centre shock then goes to CLD and DPH in
-proportion to their output. Other countries, including India, are not
-split.
+proportion to their output. Sector labels of both ICIO editions are
+accepted (`J62_63` in 2023, `62T63` in 2025).
+
+### 4b. Indian data-centre split (optional, `--split-india-iot`)
+
+Source: the 2023–24 India input-output table (70 sectors, INR crore) with
+an added AI-DC sector (data-centre services, NIC 6311), RAS-balanced in
+sheet `Z RAS Final` of `IOT_2023-24_RAS.xlsx`. Only ratios are used.
+`IND_62T63` is split into `IND_62T63_DC` and `IND_62T63_OTH`:
+
+$$w_{DC} = \frac{x_{AIDC}}{x_{AIDC} + x_{CS}}$$
+
+with $x_{CS}$ the output of Computer related services before the AI-DC
+purchases were added (0.449% in the current workbook; override with
+`--india-dc-share`).
+
+*Columns.* AI-DC input coefficients $a^{IOT}_{g,DC}$ are mapped from IOT
+sectors $g$ to ICIO sectors $s$ (`IOT_TO_ICIO` in `india_iot_split.py`;
+one-to-many mappings are shared by Indian ICIO output). The IOT records
+total (domestic + imported) use, so each ICIO sector's coefficient is
+shared across countries of origin $o$ with the origin mix of
+`IND_62T63`'s 2022 purchases:
+
+$$z^{seed}_{(o,s),DC} = a^{IOT}_{s,DC}\, x_{DC}\, \frac{z_{(o,s),62T63}}{\sum_{o'} z_{(o',s),62T63}} .$$
+
+The rest of the sector gets $z^{seed}_{\cdot,OTH} = z_{\cdot,62T63} - z^{seed}_{\cdot,DC}$.
+The $n\times 2$ block is then RAS-balanced (section 4c) to the AI-DC and
+Computer related services value-added shares of the IOT (12.0% and
+72.0%).
+
+*Rows.* AI-DC sales shares by purchasing IOT sector are mapped to Indian
+ICIO purchasers (sales to Computer related services go to `IND_62T63_OTH`);
+data centres have no final-demand sales or exports, as in the IOT. The
+$2\times(n+1+n_{FD})$ row block is RAS-balanced so that rows add up to
+subsector output and columns to the parent's row cells.
+
+*Emissions.* `IND_62T63` direct emissions are split by output (default) or
+electricity purchases (`--india-split-emissions-basis`). The data-centre
+shock for India goes to `IND_62T63_DC` (map India to `IND_62T63` in
+`dc_sector_map.csv`).
+
+Note: the IOT's AI-DC column spends 1.18% of output on electricity and
+treats servers, machinery and steel as intermediate inputs. In the
+`icio_endogenous` sensitivity this column is used as is; in the physical
+sensitivity the electricity coefficient is replaced (section 9). If
+`--capex` is also used, equipment would be counted in both the column and
+the capex shock.
+
+### 4c. RAS re-balancing of split sectors
+
+Splitting a parent industry $p$ into subsectors $k$ shares its input
+column out across the subsector columns. To make each subsector's value
+added consistent with its source table, the $n\times K$ block of subsector
+columns is RAS-balanced (`split_rebalance.ras_split_columns`, signed RAS
+from cswans46/baltic):
+
+$$\sum_k z_{ik} = z_{ip}\ \ \forall i, \qquad
+\sum_i z_{ik} = x_k - VA_k^{*}\ \ \forall k, \qquad
+VA_k^{*} = VA_p\,\frac{x_k s_k}{\sum_m x_m s_m},$$
+
+where $s_k$ is the value-added share of output in the source table
+(Canada: $1-\sum_g u_{gk}/x_k$ from the StatCan SUT for NAICS 51821 and the
+rest of J62_63; India: the IOT shares above). Every other cell of the ICIO
+is untouched, so the table remains balanced in both directions and the
+parent's value added is preserved. `--no-split-rebalance` turns the
+column RAS off.
+
+After all splits and the origin override, `split_rebalance.balance_report`
+checks the full table: the row identity $\mathbf{x} = \mathbf{Z}\mathbf{1} + \mathbf{f}$
+and industries with negative value added, which are listed in
+`icio_negative_value_added.csv` and in the log.
 
 ## 5. Country-of-origin override (optional)
 
@@ -153,6 +223,22 @@ per year (`price_mn_MW_2022`). Three shock bases are calculated:
 | `annual_increment` | $Q_t - Q_{t-1}$ | $G_t - G_{t-1}$ | year-on-year |
 | `cumulative_vs_first_year` | $Q_t - Q_{t_0}$ | $G_t - G_{t_0}$ | **headline** |
 | `2030_additional_output` | $Q_{2030}$ | $G_{2030}$ | upper bound: treats all 2030 output as new, although the 2022 ICIO already contains existing data centres |
+
+Two options change the output and electricity definitions:
+
+* `--output-includes-power-passthrough`: `price_mn_MW_2022` is treated as
+  rent that excludes power (wholesale colocation leases are quoted
+  excluding power pass-through), and the facility electricity bill is
+  added to output: $Q = MW\,p + G^{fac} P / 1000$ (columns
+  `dc_rent_usd_mn` and `power_passthrough_usd_mn`).
+* `--it-utilisation u`: electricity demand is multiplied by $u \in (0,1]$.
+  Use it when `dc_electricity_demand.csv` assumes full load
+  (electricity MW = capacity × PUE). It also lowers grid emissions and
+  water; e-waste (capacity-based) is unchanged.
+
+The resulting electricity cost share of output is
+
+$$e = \frac{u\, PUE \times 8760 \times P / 10^6}{p + \mathbb{1}_{pt}\, u\, PUE \times 8760 \times P/10^6}.$$
 
 **Attribution lenses** multiply both output and electricity by a share
 $\alpha$: all expansion ($\alpha = 1$), US customer demand
@@ -445,8 +531,9 @@ in the build year, reported separately in
 
 1. Fixed 2022 technology and intensities except the destination
    electricity sector under `projected_grid` / `btm_natgas`.
-2. The data-centre proxy is J62_63 (or CLD/DPH for Canada); for India its
-   non-electricity cost structure is that of IT services in general.
+2. The data-centre proxy is J62_63 / 62T63, or CLD/DPH for Canada and DC
+   for India when the splits are used; without the India split, India's
+   cost structure is that of IT services in general.
 3. Output per MW (`price_mn_MW_2022`) drives the shock size and the
    electricity cost share. Current inputs imply electricity costs of 59%
    (Canada) and 98% (India) of data-centre revenue, with capacity running
@@ -479,6 +566,10 @@ in the build year, reported separately in
 | No embodied capex | Optional `--capex` module | Not run by default |
 | E-waste calculated outside the model | `ewaste.py`, in `ewaste_metrics.csv` and the headline summary | Same values as before (17.784 t/MW) |
 | `2030_additional_output` not flagged | `shock_basis_note` marks it as an upper bound | — |
+| Canadian split failed on ICIO 2025 labels (`62T63`) and matched inputs by 2023 letter codes | Both label conventions accepted | Split runs on ICIO 2025 |
+| India not split | `--split-india-iot` (section 4b) | India shock goes to a data-centre sector |
+| Split columns' value added was a residual | RAS to source-table value-added shares (section 4c); table-wide balance check | Balanced table with sourced value added |
+| Electricity cost share fixed by rent per MW at full load | `--output-includes-power-passthrough`, `--it-utilisation` | Lower, sourced electricity shares |
 
 ## References
 

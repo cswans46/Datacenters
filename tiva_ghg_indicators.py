@@ -96,7 +96,11 @@ def compute_indicators(
         v = 1.0 - a.sum(axis=0)
         v[x <= 0] = 0.0
     if (v < -1e-9).any():
-        LOG.warning("%s industries have negative value-added coefficients.", int((v < -1e-9).sum()))
+        bad = np.flatnonzero(v < -1e-9)
+        LOG.warning(
+            "%s industries have negative value-added coefficients: %s",
+            len(bad), ", ".join(f"{keys[i]} ({v[i]:.3f})" for i in bad[:20]),
+        )
 
     known = {country_of(k) for k in keys}
     row_c = [country_of(k, known) for k in keys]

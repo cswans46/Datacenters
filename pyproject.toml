@@ -16,6 +16,7 @@ dependencies = [
     "scipy",
     "pyarrow",
     "matplotlib",
+    "openpyxl",      # India IOT workbook (--split-india-iot)
 ]
 
 [project.optional-dependencies]
@@ -63,6 +64,8 @@ py-modules = [
     "build_aea_emission_weights",
     "summarize_results",
     "ewaste",
+    "india_iot_split",
+    "split_rebalance",
 ]
 
 [tool.setuptools.packages.find]
