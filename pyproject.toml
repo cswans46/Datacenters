@@ -62,6 +62,7 @@ py-modules = [
     "build_aea_crosswalk",
     "build_aea_emission_weights",
     "summarize_results",
+    "ewaste",
 ]
 
 [tool.setuptools.packages.find]

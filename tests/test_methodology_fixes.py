@@ -192,3 +192,25 @@ def test_headline_summary_new_outputs(model, tmp_path):
     assert row.btm_increase_vs_projected_grid_tonnes_co2e == pytest.approx(0.92 * 800 * 1000 * (0.36 - 0.04))
     assert origins.iloc[0].origin_country == "USA"
     assert "Top 1 foreign supplier" in (tmp_path / "headline_summary.md").read_text()
+
+
+def test_ewaste_reference_case():
+    import ewaste
+    cap = pd.DataFrame({"country": ["CAN", "CAN"], "year": [2029, 2030], "dc_capacity_mw": [100.0, 275.0]})
+    t = ewaste.ewaste_metrics(cap, server_lifetime_years=5)
+    row = t.loc[t.year == 2030].iloc[0]
+    assert row.racks == pytest.approx(2090)
+    assert row.servers == pytest.approx(37620)
+    assert row.ewaste_stock_tonnes == pytest.approx(4890.6)
+    assert row.ewaste_new_capacity_tonnes == pytest.approx(175 * 17.784)
+    assert row.ewaste_annual_tonnes == pytest.approx(4890.6 / 5)
+
+
+def test_ewaste_overrides():
+    import ewaste
+    cap = pd.DataFrame({"country": ["IND"], "year": [2030], "dc_capacity_mw": [10.0]})
+    over = pd.DataFrame({"country": ["IND"], "year": [2030], "server_kg": [100.0]})
+    row = ewaste.ewaste_metrics(cap, coefficients=over).iloc[0]
+    assert row.ewaste_stock_tonnes == pytest.approx(10 * 7.6 * 18 * 0.1)
+    assert row.coefficient_source == ewaste.COEFFICIENT_FILE
+    assert np.isnan(row.ewaste_annual_tonnes)

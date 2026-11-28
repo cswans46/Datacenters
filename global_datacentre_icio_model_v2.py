@@ -117,6 +117,7 @@ import pyreadr
 from scipy.linalg import lu_factor, lu_solve
 
 import canada_dsut_split as cds
+import ewaste
 import tiva_ghg_indicators as tgi
 
 
@@ -3188,6 +3189,16 @@ def parse_args():
         help="Also estimate embodied emissions of construction and equipment "
              "from dc_capex.csv and dc_capex_composition.csv in --data-dir.",
     )
+    ew = parser.add_argument_group("Server e-waste (ewaste.py)")
+    ew.add_argument("--racks-per-mw", type=float, default=ewaste.RACKS_PER_MW,
+                    help="AI racks per MW of IT capacity (GB300 NVL72: 7.6).")
+    ew.add_argument("--servers-per-rack", type=float, default=ewaste.SERVERS_PER_RACK,
+                    help="Servers (compute trays) per rack (GB300 NVL72: 18).")
+    ew.add_argument("--server-kg", type=float, default=ewaste.SERVER_KG,
+                    help="Mass per server in kg (default 130).")
+    ew.add_argument("--server-lifetime-years", type=float, default=None,
+                    help="If given, also report the steady-state annual e-waste flow "
+                         "(installed server mass / lifetime).")
     elec.add_argument(
         "--no-headline-summary",
         action="store_true",
@@ -3460,6 +3471,17 @@ def main():
         args.output_dir / "physical_operational_metrics.csv",
         index=False,
     )
+
+    # End-of-life server e-waste from installed IT capacity.
+    ewaste_table = ewaste.ewaste_metrics(
+        output,
+        racks_per_mw=args.racks_per_mw,
+        servers_per_rack=args.servers_per_rack,
+        server_kg=args.server_kg,
+        server_lifetime_years=args.server_lifetime_years,
+        coefficients=ewaste.load_coefficients(args.data_dir),
+    )
+    ewaste_table.to_csv(args.output_dir / "ewaste_metrics.csv", index=False)
 
     scenarios.to_csv(
         args.output_dir / "dc_output_and_electricity_calibration.csv",

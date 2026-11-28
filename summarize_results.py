@@ -18,6 +18,9 @@ headline scenario:
 * the BTM gas comparison (gross on-site emissions and the increase over
   the same electricity drawn from the projected grid);
 * operational cooling water;
+* end-of-life server e-waste (ewaste.py): installed server mass in the
+  headline year, the part from capacity added since the first year, and
+  an annual flow if a server lifetime was given;
 * the top five foreign supplier countries: value of goods and services
   produced there for the expansion, cross-border intermediates (new
   outputs only), the emissions emitted there, and the products most
@@ -57,6 +60,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+import ewaste as ew
+
 LOG = logging.getLogger("datacentre_icio.summary")
 
 UPSTREAM_SUMMARY = "upstream_emissions_summary.csv"
@@ -64,6 +69,8 @@ DOWNSTREAM_SUMMARY = "downstream_emissions_summary.csv"
 BY_ORIGIN = "upstream_emissions_by_origin_country_sector.csv"
 PHYSICAL = "physical_operational_metrics.csv"
 CAPEX_SUMMARY = "capex_embodied_emissions_summary.csv"
+EWASTE = "ewaste_metrics.csv"
+CALIBRATION = "dc_output_and_electricity_calibration.csv"
 
 LEGACY_BTM_SHARE = 0.92
 
@@ -261,6 +268,47 @@ def _physical_for(physical: Optional[pd.DataFrame], country: str, year: int, bas
     }
 
 
+def load_ewaste(output_dir: Path) -> Optional[pd.DataFrame]:
+    """ewaste_metrics.csv, or rebuilt from capacity with default coefficients."""
+    path = output_dir / EWASTE
+    if path.exists():
+        return pd.read_csv(path)
+    calibration = output_dir / CALIBRATION
+    if calibration.exists():
+        LOG.info("%s not found: e-waste rebuilt from %s with default coefficients.", EWASTE, CALIBRATION)
+        return ew.ewaste_metrics(pd.read_csv(calibration))
+    return None
+
+
+def _ewaste_for(table: Optional[pd.DataFrame], country: str, year: int, basis: str) -> dict:
+    empty = {k: np.nan for k in (
+        "dc_capacity_mw", "servers", "ewaste_stock_tonnes",
+        "ewaste_new_capacity_tonnes", "ewaste_annual_tonnes", "ewaste_tonnes_per_mw",
+    )}
+    if table is None:
+        return empty
+    t = table.loc[table["country"] == country].sort_values("year")
+    row = t.loc[t["year"] == year]
+    if row.empty:
+        return empty
+    row = row.iloc[0]
+    if basis == "annual_increment":
+        prev = t.loc[t["year"] == year - 1, "ewaste_stock_tonnes"]
+        new = row["ewaste_stock_tonnes"] - (prev.iloc[0] if len(prev) else 0.0)
+    elif basis == "cumulative_vs_first_year":
+        new = row["ewaste_new_capacity_tonnes"]
+    else:
+        new = row["ewaste_stock_tonnes"]
+    return {
+        "dc_capacity_mw": float(row["dc_capacity_mw"]),
+        "servers": float(row["servers"]),
+        "ewaste_stock_tonnes": float(row["ewaste_stock_tonnes"]),
+        "ewaste_new_capacity_tonnes": float(new),
+        "ewaste_annual_tonnes": float(row["ewaste_annual_tonnes"]),
+        "ewaste_tonnes_per_mw": float(row["tonnes_per_mw"]),
+    }
+
+
 # ---------------------------------------------------------------------
 # Headline calculation
 # ---------------------------------------------------------------------
@@ -284,6 +332,8 @@ def summarise(
 
     if physical is None and (output_dir / PHYSICAL).exists():
         physical = pd.read_csv(output_dir / PHYSICAL)
+
+    ewaste_table = load_ewaste(output_dir)
 
     legacy = "upstream_excl_direct_ghg_tonnes_co2e" not in upstream.columns
     if legacy:
@@ -387,6 +437,7 @@ def summarise(
             "natgas_kgco2_per_kwh": phys.get("natgas_kgco2_per_kwh", np.nan),
             "operational_water_ml_level": phys.get("operational_water_ml_level", np.nan),
             "operational_water_ml_change": phys.get("operational_water_ml_change", np.nan),
+            **_ewaste_for(ewaste_table, country, keys["year"], keys["shock_basis"]),
             "baseline_global_ghg_tonnes_co2e": baseline,
         })
 
@@ -506,6 +557,17 @@ def headline_text(headline: pd.DataFrame, origins: pd.DataFrame, capex: Optional
             f"({row.operational_water_ml_change / 1e3:+,.1f} billion litres over {period})."
         )
         lines.append("")
+        if pd.notna(row.ewaste_stock_tonnes):
+            text = (
+                f"End-of-life server e-waste: {row.ewaste_stock_tonnes / 1e3:,.1f} kt for the "
+                f"{row.dc_capacity_mw:,.0f} MW installed in {row.year} ({row.servers:,.0f} servers, "
+                f"{row.ewaste_tonnes_per_mw:.3f} t/MW), of which {row.ewaste_new_capacity_tonnes / 1e3:,.1f} kt "
+                f"from capacity added over {period}"
+            )
+            if pd.notna(row.ewaste_annual_tonnes):
+                text += f"; {row.ewaste_annual_tonnes / 1e3:,.1f} kt per year at steady state"
+            lines.append(text + ".")
+            lines.append("")
         top = origins.loc[origins["shock_destination"] == row.shock_destination].sort_values("rank")
         if len(top):
             lines.append(f"Top {len(top)} foreign supplier countries (value of goods and services produced there for the expansion; emissions emitted there):")

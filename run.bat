@@ -42,12 +42,14 @@ REM 0.92 is the Alberta share of planned capacity: an upper bound for BTM.
 set "elec_opts=--btm-natgas-share 0.92 --natgas-upstream-kgco2e-per-kwh 0.0"
 REM Optional embodied capex (needs dc_capex.csv and dc_capex_composition.csv):
 @REM set "capex=--capex"
+REM Server e-waste: defaults are GB300 NVL72 (7.6 racks/MW, 18 servers/rack, 130 kg).
+@REM set "ewaste_opts=--server-lifetime-years 5"
 
 REM Run model
 echo.
 echo Running the data-centre ICIO model...
 
-python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %cloud_share% %indicators% %elec_opts% %capex% %check_only%
+python global_datacentre_icio_model_v2.py --data-dir "%DATA_DIR%" --output-dir "%OUTPUT_DIR%" --A-file "%ICIO_DATA_DIR%\ICIO2025econA.RData" --X-file "%ICIO_DATA_DIR%\ICIO2025econX.RData" --FD-file "%ICIO_DATA_DIR%\ICIO2025econFD.RData" --emissions-extension "%DATA_DIR%\hybrid_emissions\direct_emissions.csv" --icio-year 2022 %canada_split% %cloud_share% %indicators% %elec_opts% %capex% %ewaste_opts% %check_only%
 
 if errorlevel 1 (
     echo.
