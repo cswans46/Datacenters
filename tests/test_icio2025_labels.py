@@ -101,3 +101,43 @@ def test_origin_override_uses_split_blocks_for_empty_country_rows():
     assert imports["MX1_26"] / imports["MX2_26"] == pytest.approx(60.0 / 30.0)
     summary, _ = sr.balance_report(A2, X2, FD2)
     assert summary["row_identity_ok"]
+
+
+@pytest.mark.parametrize("label, sector", [
+    ("Banking and other depository credit intermediation [BS521000]", "64T66"),
+    ("Data processing, hosting, and related services [BS518000]", "62T63"),
+    ("Computer systems design and related services [BS541500]", "62T63"),
+    ("Legal services [BS541100]", "69T75"),
+    ("Pharmaceutical and medicine manufacturing [BS325400]", "21"),
+    ("Iron foundries [BS331511]", "24A"),
+    ("Elementary and secondary schools [GS611100]", "85"),
+    ("Religious organizations [NP813100]", "94T96"),
+    ("Federal government services [GS911000]", "84"),
+    ("Household final consumption expenditure [PEC]", None),
+])
+def test_naics_to_icio(label, sector):
+    assert cds.icio_sector_of_sut_industry(label) == sector
+
+
+@pytest.mark.parametrize("structure", ["sut", "parent"])
+def test_dc_sales_follow_sut_purchasers(tmp_path, structure):
+    A, X, FD = icio_2025()
+    plan = cds.prepare_canada_split(
+        tc.make_sut_csv(tmp_path / "s.csv"), tc.make_dsut_csv(tmp_path / "d.csv"), 2022,
+        parent_sector="62T63",
+    )
+    # In the fixture only banks (NAICS 521 -> 64T66) buy the 51821 product.
+    assert plan.dc_sales_sector_shares.to_dict() == {"64T66": 1.0}
+    A2, X2, FD2, diag = cds.split_icio(A, X, FD, plan, dc_sales_structure=structure)
+    Z2 = A2 * X2
+    dom_cols = [k for k in A2.columns if k.startswith("CAN_")]
+    for key in (plan.cloud_key, plan.hosting_key):
+        sales = Z2.loc[key, dom_cols]
+        share_fin = sales["CAN_64T66"] / sales.sum()
+        if structure == "sut":
+            assert share_fin > 0.95
+        else:
+            parent = (A * X).loc["CAN_62T63", [c for c in A.columns if c.startswith("CAN_")]]
+            assert share_fin == pytest.approx(parent["CAN_64T66"] / parent.sum(), rel=1e-6)
+    if structure == "sut":
+        assert diag["dc_domestic_sales_by_sector"]["achieved_shares"]["64T66"] > 0.95

@@ -125,8 +125,21 @@ Columns (cost structures): each input cell is split in proportion to
 $w_k r_k(g)$, where $r_k(g)$ is the SUT input intensity of subsector $k$
 for input group $g$ relative to J62_63. Rows (sales structures) are split
 by destination block (domestic/foreign × intermediate/final) and
-RAS-balanced. The columns are then RAS-balanced to SUT value-added
-targets (section 4c). The split is exact in aggregate. Direct emissions of
+RAS-balanced. Within the domestic-intermediate block, CLD and DPH sales
+are allocated across Canadian industries by the SUT purchasers of the
+NAICS 51821 products (data processing, hosting and related services; SUT
+industry codes `BS/GS/NP` mapped to ICIO sectors with `NAICS_TO_ICIO`),
+
+$$z^{seed}_{k,j} = T_k\, \sigma_{s(j)} \frac{z_{p,j}}{\sum_{j' \in s(j)} z_{p,j'}},$$
+
+where $T_k$ is subsector $k$'s domestic-intermediate sales and
+$\sigma_s$ the 51821 purchaser share of sector $s$; the $K\times n_{CAN}$
+block is then RAS-balanced so each purchaser's total purchases from the
+parent are unchanged (`--canada-dc-sales-structure parent` keeps the
+parent-row mix). StatCan's digital SUTs split cloud from non-cloud output
+only and assume uses are split the same way, so no cloud-specific purchaser
+data exist. Diagnostics: `canada_split_dc_sales_by_sector.csv`. The
+columns are then RAS-balanced to SUT value-added targets (section 4c). The split is exact in aggregate. Direct emissions of
 `CAN_J62_63` are split by output (equal intensity, default) or by
 electricity purchases. The data-centre shock then goes to CLD and DPH in
 proportion to their output. Sector labels of both ICIO editions are
@@ -575,6 +588,7 @@ in the build year, reported separately in
 | India not split | `--split-india-iot` (section 4b) | India shock goes to a data-centre sector |
 | Split columns' value added was a residual | RAS to source-table value-added shares (section 4c); table-wide balance check | Balanced table with sourced value added |
 | Server-origin override sent Mexico's share to the empty `MEX_26` row (ICIO 2025 reports Mexico as MX1/MX2), leaving about USD 119 mn of sales with zero output and zero emissions | CHN/MEX shares are spread over CN1/CN2 and MX1/MX2 by output; zero-output rows are never used; the balance check names failing rows (`icio_row_identity_errors.csv`) | Table balanced again; Mexican server production now carries emissions |
+| Canadian CLD/DPH sold to Canadian industries in the same mix as all IT services | Purchasers of NAICS 51821 products from the 2022 SUT, RAS-balanced | Downstream emissions reflect who buys hosting and data processing |
 | Electricity cost share fixed by rent per MW at full load | `--output-includes-power-passthrough`, `--it-utilisation` | Lower, sourced electricity shares |
 
 ## References

@@ -3307,6 +3307,13 @@ def parse_args():
              "(dc_origin_override.py); 'default' uses the built-in C26 variant.",
     )
     split.add_argument(
+        "--canada-dc-sales-structure",
+        choices=["sut", "parent"],
+        default="sut",
+        help="How CLD and DPH sales to Canadian industries are allocated: 'sut' (default) "
+             "by SUT purchasers of NAICS 51821 products; 'parent' like all of J62_63/62T63.",
+    )
+    split.add_argument(
         "--no-split-rebalance",
         action="store_true",
         help="Do not RAS-balance the split columns to source-table value-added shares "
@@ -3384,7 +3391,11 @@ def apply_canada_split(args, A, X, FD):
         parent_sector=cds.resolve_parent_sector(A.index),
     )
 
-    A, X, FD, split_diag = cds.split_icio(A, X, FD, plan, rebalance=not args.no_split_rebalance)
+    A, X, FD, split_diag = cds.split_icio(
+        A, X, FD, plan,
+        rebalance=not args.no_split_rebalance,
+        dc_sales_structure=args.canada_dc_sales_structure,
+    )
     cds.write_split_diagnostics(args.output_dir / "canada_dsut_split", plan, split_diag)
 
     # Country-of-origin override for the data-centre sectors (CLD, DPH).

@@ -64,7 +64,14 @@ Only Canada is split. India and every other economy are left unchanged.
    the subsector's products relative to J62_63, and then RAS-balanced so
    subsector rows add to subsector output and blocks add to the original
    block totals. Within a block, sales are allocated in proportion to the
-   original J62_63 row.
+   original J62_63 row, except the CLD and DPH sales to Canadian industries
+   (domestic intermediate block): these follow the SUT purchasers of the
+   NAICS 51821 products (data processing, hosting and related services),
+   mapped from SUT industry codes to ICIO sectors (NAICS_TO_ICIO) and
+   RAS-balanced so that each purchaser's total purchases from the parent are
+   unchanged. StatCan's digital SUTs split cloud from non-cloud output only
+   and assume the same use structure, so no cloud-specific purchaser data
+   exist; the 51821 product row is the most specific published source.
 
    The split is exact in aggregate: adding the three subsectors back
    together returns the original ICIO rows, columns, output and final
@@ -357,6 +364,49 @@ def member_code(label: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+# NAICS (Canada) prefix -> ICIO 2025 sector; the longest matching prefix
+# wins. Used to map StatCan SUT industries (codes BSnnnnnn, GSnnnnnn,
+# NPnnnnnn) to ICIO purchasing industries.
+NAICS_TO_ICIO = [
+    ("111", "01"), ("112", "01"), ("113", "02"), ("114", "03"), ("115", "01"),
+    ("211", "06"), ("2121", "05"), ("2122", "07"), ("2123", "08"), ("213", "09"),
+    ("2211", "35"), ("2212", "35"), ("2213", "36T39"), ("23", "41T43"),
+    ("311", "10T12"), ("312", "10T12"), ("313", "13T15"), ("314", "13T15"),
+    ("315", "13T15"), ("316", "13T15"), ("321", "16"), ("322", "17T18"),
+    ("323", "17T18"), ("324", "19"), ("325", "20"), ("3254", "21"), ("326", "22"),
+    ("327", "23"), ("3311", "24A"), ("3312", "24A"), ("3313", "24B"),
+    ("3314", "24B"), ("33151", "24A"), ("33152", "24B"), ("3315", "24A"),
+    ("332", "25"), ("333", "28"), ("334", "26"), ("335", "27"), ("3361", "29"),
+    ("3362", "29"), ("3363", "29"), ("3364", "302T309"), ("3365", "302T309"),
+    ("3366", "301"), ("3369", "302T309"), ("337", "31T33"), ("339", "31T33"),
+    ("41", "45T47"), ("44", "45T47"), ("45", "45T47"),
+    ("481", "51"), ("482", "49"), ("483", "50"), ("484", "49"), ("485", "49"),
+    ("486", "49"), ("487", "49"), ("488", "52"), ("491", "53"), ("492", "53"),
+    ("493", "52"),
+    ("511", "58T60"), ("512", "58T60"), ("513", "58T60"), ("515", "58T60"),
+    ("516", "58T60"), ("517", "61"), ("518", "62T63"), ("519", "62T63"),
+    ("52", "64T66"), ("531", "68"), ("532", "77T82"), ("533", "77T82"),
+    ("5415", "62T63"), ("541", "69T75"), ("55", "69T75"), ("561", "77T82"),
+    ("562", "36T39"), ("61", "85"), ("62", "86T88"), ("71", "90T93"),
+    ("72", "55T56"), ("8111", "45T47"), ("811", "94T96"), ("812", "94T96"),
+    ("813", "94T96"), ("814", "97T98"), ("91", "84"),
+]
+
+
+def icio_sector_of_sut_industry(label: str) -> Optional[str]:
+    """ICIO 2025 sector of a StatCan SUT industry label, e.g. '... [BS521000]'."""
+    code = member_code(label)
+    digits = re.match(r"^[A-Z]{2}(\d+)", code.upper())
+    if not digits:
+        return None
+    naics = digits.group(1)
+    best = None
+    for prefix, sector in NAICS_TO_ICIO:
+        if naics.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, sector)
+    return best[1] if best else None
+
+
 _FINAL_PATTERN = re.compile(
     r"final consumption|household|government|non-profit|npish|capital formation|fixed capital|"
     r"inventor|investment|final demand|final use",
@@ -498,6 +548,8 @@ class SutAggregates:
     products_518: list[str]
     products_other_j: list[str]
     diagnostics: dict = field(default_factory=dict)
+    # Intermediate use of the NAICS 51821 products by using SUT industry.
+    industry_use_518: Optional[pd.Series] = None
 
 
 def _group_of_product(name: str, concordance: list[tuple[str, str, str]]) -> str:
@@ -588,6 +640,12 @@ def compute_sut_aggregates(
     if (sales.sum() <= 0).any():
         raise ValueError(f"SUT product uses are zero for a group:\n{sales}")
 
+    industry_use_518 = (
+        use.loc[use["product"].isin(products_518) & use["category"].eq("industry")]
+        .groupby("column")["value"].sum()
+    )
+    industry_use_518 = industry_use_518.loc[industry_use_518 > 0]
+
     diagnostics = {
         "sut_year": sut.year,
         "output_518": x_518,
@@ -609,6 +667,7 @@ def compute_sut_aggregates(
         products_518=products_518,
         products_other_j=products_oth,
         diagnostics=diagnostics,
+        industry_use_518=industry_use_518,
     )
 
 
@@ -713,6 +772,10 @@ class CanadaSplitPlan:
     # Value-added share of output by subsector (SUT: 1 - total input
     # intensity), used as RAS column targets. None disables the targets.
     va_share: Optional[dict] = None
+    # Purchasers of the NAICS 51821 products by ICIO sector (shares of
+    # domestic intermediate use, from the SUT use table). Used to allocate
+    # CLD and DPH sales to Canadian industries. None: parent-row allocation.
+    dc_sales_sector_shares: Optional[pd.Series] = None
 
     @property
     def cloud_key(self) -> str:
@@ -815,7 +878,32 @@ def build_split_plan(
     va_share = {sub_keys[0]: va_518, sub_keys[1]: va_518, sub_keys[2]: va_oth}
     diagnostics["sut_value_added_share"] = {"518": va_518, "OTH": va_oth, "J": float(1.0 - intensity["J"].sum())}
 
+    # Who buys data processing and hosting (51821 products), by ICIO sector.
+    dc_sales_sector_shares = None
+    if sut_agg.industry_use_518 is not None and len(sut_agg.industry_use_518):
+        sectors = pd.Series(
+            [icio_sector_of_sut_industry(c) for c in sut_agg.industry_use_518.index],
+            index=sut_agg.industry_use_518.index,
+        )
+        unmapped = sut_agg.industry_use_518[sectors.isna()]
+        if len(unmapped):
+            LOG.warning(
+                "SUT industries without an ICIO sector (excluded from the 51821 sales structure): %s",
+                unmapped.index.tolist()[:10],
+            )
+        mapped = sut_agg.industry_use_518[sectors.notna()].groupby(sectors.dropna()).sum()
+        if mapped.sum() > 0:
+            dc_sales_sector_shares = (mapped / mapped.sum()).sort_values(ascending=False)
+            diagnostics["dc_sales_sector_shares"] = dc_sales_sector_shares.round(6).to_dict()
+            diagnostics["dc_sales_unmapped_share"] = float(unmapped.sum() / sut_agg.industry_use_518.sum())
+            LOG.info(
+                "Canadian data-centre sales to industries follow SUT purchasers of NAICS 51821 "
+                "products; largest: %s",
+                ", ".join(f"{k} {100 * v:.1f}%" for k, v in dc_sales_sector_shares.head(5).items()),
+            )
+
     return CanadaSplitPlan(
+        dc_sales_sector_shares=dc_sales_sector_shares,
         va_share=va_share,
         parent_key=parent_key,
         sub_keys=sub_keys,
@@ -832,6 +920,63 @@ def build_split_plan(
 # ---------------------------------------------------------------------
 # ICIO split
 # ---------------------------------------------------------------------
+
+def _allocate_dc_domestic_sales(new_rows, parent_row, col_home, new_keys, plan, known):
+    """
+    Re-allocate the domestic intermediate sales of the data-centre
+    subsectors (CLD, DPH) across Canadian purchasing industries by the SUT
+    purchasers of NAICS 51821 products, keeping each subsector's block total
+    and, via RAS, each purchaser's total purchases from the parent.
+    """
+    from icio_projection.ras import ras_signed
+
+    dom = np.flatnonzero(col_home)
+    parent = parent_row[dom]
+    K = new_rows.shape[0]
+    dc = list(range(K - 1))                      # CLD, DPH; last row is OTH
+    totals = new_rows[:, dom].sum(axis=1)
+
+    sectors = np.array([
+        normalise_sector_code(sector_of(new_keys[c])).split("_")[0] for c in dom
+    ])
+    shares = plan.dc_sales_sector_shares
+    present = shares[shares.index.isin(set(sectors))]
+    if present.sum() <= 0:
+        LOG.warning(
+            "No ICIO sector matches the SUT 51821 purchasers (ICIO labels may be the "
+            "2023 edition); keeping the parent-row allocation."
+        )
+        return new_rows, {}
+    present = present / present.sum()
+
+    seed = new_rows[:, dom].copy()
+    for k in dc:
+        target = np.zeros(len(dom))
+        for sector, share in present.items():
+            cols = np.flatnonzero(sectors == sector)
+            w = parent[cols].clip(min=0)
+            w = w / w.sum() if w.sum() > 0 else np.full(len(cols), 1.0 / len(cols))
+            target[cols] += share * totals[k] * w
+        # Small parent-row component keeps the RAS feasible where the SUT
+        # purchaser needs more than the parent sells to that industry.
+        seed[k] = 0.999 * target + 0.001 * totals[k] * parent.clip(min=0) / max(parent.clip(min=0).sum(), 1e-12)
+
+    balanced, info = ras_signed(seed, totals, parent, label="Canada DC domestic sales")
+    out = new_rows.copy()
+    out[:, dom] = balanced
+
+    by_sector = pd.DataFrame({
+        "sector": sectors,
+        **{plan.sub_keys[k]: balanced[k] for k in range(K)},
+    }).groupby("sector").sum()
+    dc_total = by_sector[[plan.sub_keys[k] for k in dc]].sum(axis=1)
+    achieved = (dc_total / dc_total.sum()).sort_values(ascending=False)
+    return out, {
+        "sut_shares": present.round(6).to_dict(),
+        "achieved_shares": achieved.round(6).to_dict(),
+        "ras": info,
+    }
+
 
 def ras(seed: np.ndarray, row_targets: np.ndarray, col_targets: np.ndarray, tol: float = 1e-12, max_iter: int = 10_000) -> np.ndarray:
     m = np.array(seed, dtype=float)
@@ -878,6 +1023,7 @@ def split_icio(
     FD: pd.DataFrame,
     plan: CanadaSplitPlan,
     rebalance: bool = True,
+    dc_sales_structure: str = "sut",
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, dict]:
     """
     Replace plan.parent_key with its subsectors in A, X and FD.
@@ -886,6 +1032,11 @@ def split_icio(
     that each subsector's value added matches the SUT value-added share
     (scaled to the parent's value added); rows still add up to the parent
     column (split_rebalance.ras_split_columns).
+
+    ``dc_sales_structure``: "sut" (default) allocates the CLD and DPH sales
+    to Canadian industries by the SUT purchasers of the NAICS 51821
+    products (plan.dc_sales_sector_shares), RAS-balanced against the
+    parent row; "parent" keeps the parent (J62_63) row's purchaser mix.
 
     Returns the split A, X, FD and a diagnostics dictionary including
     the row-block shares used.
@@ -971,6 +1122,16 @@ def split_icio(
     fd_q = np.where(fd_home[None, :], q["domestic_final"].to_numpy()[:, None], q["foreign_final"].to_numpy()[:, None])
     new_fd_rows = fd_row[None, :] * fd_q                    # K x nfd
 
+    # Domestic intermediate sales of the data-centre subsectors (all but
+    # the last, OTH) by SUT purchasers of the 51821 products.
+    sales_diag: dict = {}
+    if dc_sales_structure == "sut" and plan.dc_sales_sector_shares is not None:
+        new_rows, sales_diag = _allocate_dc_domestic_sales(
+            new_rows, row, col_home, new_keys, plan, known,
+        )
+    elif dc_sales_structure not in ("sut", "parent"):
+        raise ValueError(f"Unknown dc_sales_structure: {dc_sales_structure}")
+
     Zs = np.concatenate([Zc[:j], new_rows, Zc[j + 1:]], axis=0)
     fds = np.concatenate([fd[:j], new_fd_rows, fd[j + 1:]], axis=0)
     xs = np.concatenate([x[:j], w * x[j], x[j + 1:]])
@@ -1009,6 +1170,8 @@ def split_icio(
         "subsector_value_added_share": dict(zip(plan.sub_keys, va_share.tolist())),
         "subsector_value_added_share_before_ras": dict(zip(plan.sub_keys, va_share_before_ras.tolist())),
         "column_ras": col_info,
+        "dc_sales_structure": dc_sales_structure if sales_diag else "parent",
+        "dc_domestic_sales_by_sector": sales_diag,
         "parent_electricity_input_coefficient": parent_elec,
         "subsector_electricity_input_coefficient": {
             k: float(As[elec_rows, j + m].sum()) for m, k in enumerate(plan.sub_keys)
@@ -1089,6 +1252,14 @@ def write_split_diagnostics(out_dir: Path, plan: CanadaSplitPlan, split_diag: di
     plan.input_ratio.rename_axis("input_group").to_csv(out_dir / "canada_split_input_ratios.csv")
     plan.sales_rho.rename_axis("sut_block").to_csv(out_dir / "canada_split_sales_ratios.csv")
     pd.DataFrame(split_diag["row_block_shares"]).rename_axis("subsector").to_csv(out_dir / "canada_split_row_block_shares.csv")
+    sales = split_diag.get("dc_domestic_sales_by_sector") or {}
+    if sales:
+        pd.DataFrame({
+            "sut_51821_purchaser_share": pd.Series(sales["sut_shares"]),
+            "split_share_after_ras": pd.Series(sales["achieved_shares"]),
+        }).rename_axis("icio_sector").sort_values("sut_51821_purchaser_share", ascending=False).to_csv(
+            out_dir / "canada_split_dc_sales_by_sector.csv"
+        )
 
 
 def prepare_canada_split(
