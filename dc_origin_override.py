@@ -53,7 +53,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from canada_dsut_split import country_of, sector_of
+from canada_dsut_split import country_of, normalise_sector_code, sector_of
 from icio_projection.ras import ras_signed
 
 LOG = logging.getLogger("datacentre_icio.origin_override")
@@ -154,8 +154,12 @@ def apply_origin_override(A: pd.DataFrame, X: pd.Series, FD: pd.DataFrame, targe
 
     diag = []
     for sector, sh in shares.groupby("input_sector"):
-        regex = rf"^{re.escape(sector)}$"
-        rows = [i for i, k in enumerate(keys) if re.search(regex, sector_of(k)) and country_of(k) != HOME]
+        # C26 (2023 ICIO edition) and 26 (2025 edition) are the same sector.
+        wanted = normalise_sector_code(sector)
+        rows = [
+            i for i, k in enumerate(keys)
+            if normalise_sector_code(sector_of(k)) == wanted and country_of(k) != HOME
+        ]
         if not rows:
             raise ValueError(f"No imported ICIO rows for input sector {sector}")
         row_country = {country_of(keys[i]): i for i in rows}

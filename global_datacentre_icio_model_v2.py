@@ -3303,6 +3303,8 @@ def apply_canada_split(args, A, X, FD):
         member_overrides=args.sut_member_overrides,
         pattern_518=args.sut_pattern_518,
         pattern_other_j=args.sut_pattern_other_j,
+        # J62_63 (ICIO 2023 edition) or 62T63 (2025 edition).
+        parent_sector=cds.resolve_parent_sector(A.index),
     )
 
     A, X, FD, split_diag = cds.split_icio(A, X, FD, plan)

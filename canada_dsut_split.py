@@ -114,6 +114,26 @@ LOG = logging.getLogger("datacentre_icio.canada_split")
 
 HOME_COUNTRY = "CAN"
 PARENT_SECTOR = "J62_63"
+# ICIO sector labels for "IT and other information services": J62_63 in the
+# 2023 edition, 62T63 in the 2025 edition (numeric codes).
+PARENT_SECTOR_CANDIDATES = ("J62_63", "62T63")
+
+
+def resolve_parent_sector(keys, home_country: str = "CAN") -> str:
+    """The J62_63 / 62T63 sector label used by this ICIO edition."""
+    keys = set(map(str, keys))
+    for candidate in PARENT_SECTOR_CANDIDATES:
+        if f"{home_country}_{candidate}" in keys:
+            return candidate
+    raise ValueError(
+        f"No IT and information services industry for {home_country} in the ICIO; "
+        f"tried {[f'{home_country}_{c}' for c in PARENT_SECTOR_CANDIDATES]}."
+    )
+
+
+def normalise_sector_code(code: str) -> str:
+    """Drop the ISIC section letter of 2023-edition codes: C26 -> 26, D35 -> 35."""
+    return re.sub(r"^[A-U](?=\d)", "", str(code).strip())
 
 SUBSECTOR_SUFFIXES = {
     "CLD": "Cloud computing services (DSUT, part of NAICS 51821)",
@@ -138,22 +158,24 @@ DEFAULT_OTHER_J_PATTERN = (
 )
 
 # SUT input products grouped into ICIO input sectors. First match wins.
-# "icio_sector_regex" is matched against ICIO sector codes (e.g. D35).
+# "icio_sector_regex" is matched against ICIO sector codes: letter codes of
+# the 2023 edition (e.g. D35, J61) and numeric codes of the 2025 edition
+# (e.g. 35, 61, 41T43).
 DEFAULT_PRODUCT_CONCORDANCE = [
     ("electricity", r"electric power|electricity|steam|natural gas distribution", r"^D35$|^D$|^35$"),
-    ("telecommunications", r"telecommunicat|wired|wireless|satellite", r"^J61"),
-    ("it_services", r"data processing|hosting|computer systems design|information services|web portal|computer services", r"^J62"),
-    ("software_publishing", r"software|publish", r"^J58"),
-    ("computer_electronic", r"computer|electronic|semiconductor|communications equipment|audio and video equipment", r"^C26"),
-    ("electrical_equipment", r"electrical equipment|electric equipment|wire and cable|batter|transformer|switchgear", r"^C27"),
-    ("machinery", r"machinery|ventilation|heating|air-conditioning|refrigeration", r"^C28"),
-    ("construction", r"construction|repair of (non-)?residential", r"^F"),
-    ("real_estate", r"real estate|rental|leasing|rent\b|lessors", r"^L"),
-    ("finance_insurance", r"financ|insurance|bank|deposit|credit|interest|securities", r"^K"),
-    ("professional", r"legal|accounting|consult|engineering|architect|advertising|research|design services|professional", r"^M"),
-    ("administrative", r"administrative|employment|security|cleaning|janitorial|travel|office support|waste", r"^N"),
-    ("trade_margins", r"wholesale|retail|margin", r"^G"),
-    ("transport", r"transport|courier|postal|warehous|trucking|pipeline", r"^H"),
+    ("telecommunications", r"telecommunicat|wired|wireless|satellite", r"^J61|^61$"),
+    ("it_services", r"data processing|hosting|computer systems design|information services|web portal|computer services", r"^J62|^62T63"),
+    ("software_publishing", r"software|publish", r"^J58|^58T60$"),
+    ("computer_electronic", r"computer|electronic|semiconductor|communications equipment|audio and video equipment", r"^C26|^26$"),
+    ("electrical_equipment", r"electrical equipment|electric equipment|wire and cable|batter|transformer|switchgear", r"^C27|^27$"),
+    ("machinery", r"machinery|ventilation|heating|air-conditioning|refrigeration", r"^C28|^28$"),
+    ("construction", r"construction|repair of (non-)?residential", r"^F|^41T43$"),
+    ("real_estate", r"real estate|rental|leasing|rent\b|lessors", r"^L|^68$"),
+    ("finance_insurance", r"financ|insurance|bank|deposit|credit|interest|securities", r"^K|^64T66$"),
+    ("professional", r"legal|accounting|consult|engineering|architect|advertising|research|design services|professional", r"^M|^69T75$"),
+    ("administrative", r"administrative|employment|security|cleaning|janitorial|travel|office support|waste", r"^N|^77T82$"),
+    ("trade_margins", r"wholesale|retail|margin", r"^G|^45T47$"),
+    ("transport", r"transport|courier|postal|warehous|trucking|pipeline", r"^H|^49$|^50$|^51$|^52$|^53$"),
 ]
 
 SUT_BLOCKS = ("intermediate", "domestic_final", "exports")
@@ -854,7 +876,11 @@ def split_icio(
     """
     keys = A.index.astype(str).tolist()
     if plan.parent_key not in keys:
-        raise ValueError(f"{plan.parent_key} is not an ICIO industry.")
+        raise ValueError(
+            f"{plan.parent_key} is not an ICIO industry. Build the plan with "
+            "parent_sector=resolve_parent_sector(A.index) (J62_63 in the 2023 "
+            "ICIO edition, 62T63 in the 2025 edition)."
+        )
     if any(k in keys for k in plan.sub_keys):
         raise ValueError("ICIO already contains the Canadian subsector keys; it has been split already.")
 
@@ -1041,11 +1067,14 @@ def prepare_canada_split(
     member_overrides: Optional[Path] = None,
     pattern_518: str = DEFAULT_518_PATTERN,
     pattern_other_j: str = DEFAULT_OTHER_J_PATTERN,
+    parent_sector: str = PARENT_SECTOR,
 ) -> CanadaSplitPlan:
     sut = load_statcan_sut(sut_file, year=sut_year, member_overrides=member_overrides)
     agg = compute_sut_aggregates(sut, pattern_518=pattern_518, pattern_other_j=pattern_other_j)
     dsut = load_dsut(dsut_file)
-    return build_split_plan(agg, dsut, cloud_share_override=cloud_share_override)
+    return build_split_plan(
+        agg, dsut, parent_sector=parent_sector, cloud_share_override=cloud_share_override,
+    )
 
 
 # ---------------------------------------------------------------------
