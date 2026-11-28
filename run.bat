@@ -16,6 +16,11 @@ if errorlevel 1 (
 REM Activate environment
 call conda activate datacenter_env || exit /b 1
 
+REM Install or update the Python dependencies listed in pyproject.toml
+REM ([project] dependencies). Packages already installed are skipped.
+echo Checking Python dependencies from pyproject.toml...
+python -c "import tomllib, subprocess, sys; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--quiet', *deps])" || exit /b 1
+
 REM Define directories
 set "DATA_DIR=%CD%"
 set "ICIO_DATA_DIR=D:\Research\OECD Research"
